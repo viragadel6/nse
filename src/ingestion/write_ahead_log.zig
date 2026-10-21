@@ -51,7 +51,7 @@ pub const Log = struct {
         const version = std.mem.readInt(u16, header[8..10], .little);
         if (version != 1 and version != 2) return error.IncompatibleLogVersion;
         const header_checksum = std.mem.readInt(u32, header[28..32], .little);
-        if ((version == 1 and header_checksum != 0) or (version == 2 and header_checksum != checksum.crc32(header[0..28]))) return error.LogHeaderChecksumMismatch;
+        if ((version == 1 and header_checksum != 0) or (version == 2 and header_checksum != checksum.crc32(header[0..28], 0))) return error.LogHeaderChecksumMismatch;
         const kind = std.meta.intToEnum(Kind, std.mem.readInt(u16, header[10..12], .little)) catch return error.InvalidLogKind;
         const length = std.mem.readInt(u32, header[12..16], .little);
         const sequence = std.mem.readInt(u64, header[16..24], .little);
@@ -65,7 +65,7 @@ pub const Log = struct {
             allocator.free(payload);
             return null;
         }
-        if (checksum.crc32(payload) != std.mem.readInt(u32, header[24..28], .little)) return error.LogChecksumMismatch;
+        if (checksum.crc32(payload, 0) != std.mem.readInt(u32, header[24..28], .little)) return error.LogChecksumMismatch;
         self.offset = try std.math.add(u64, payload_offset, length);
         self.sequence = sequence;
         return .{ .sequence = sequence, .kind = kind, .payload = payload };
@@ -93,8 +93,8 @@ pub const Log = struct {
         std.mem.writeInt(u16, header[10..12], @intFromEnum(kind), .little);
         std.mem.writeInt(u32, header[12..16], length, .little);
         std.mem.writeInt(u64, header[16..24], sequence, .little);
-        std.mem.writeInt(u32, header[24..28], checksum.crc32(payload), .little);
-        std.mem.writeInt(u32, header[28..32], checksum.crc32(header[0..28]), .little);
+        std.mem.writeInt(u32, header[24..28], checksum.crc32(payload, 0), .little);
+        std.mem.writeInt(u32, header[28..32], checksum.crc32(header[0..28], 0), .little);
         const end = try std.math.add(u64, try std.math.add(u64, self.offset, header_size), payload.len);
         self.file.pwriteAll(&header, self.offset) catch |err| return self.rollback(err);
         self.file.pwriteAll(payload, self.offset + header_size) catch |err| return self.rollback(err);

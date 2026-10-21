@@ -35,8 +35,16 @@ pub fn prepare(allocator: std.mem.Allocator, config: deployment.Configuration) !
 
 fn readiness(allocator: std.mem.Allocator, endpoint: []const u8, timeout_ms: u32) !bool {
     const url = try std.fmt.allocPrint(allocator, "{s}/health", .{std.mem.trimRight(u8, endpoint, "/")}); defer allocator.free(url);
-    const response = try http.request(allocator, .GET, url, null, 65536, timeout_ms); defer allocator.free(response.body);
-    if (response.status != .ok) return false;
+    var client = http.Client.init(allocator, .{
+        .connect_timeout_ms = timeout_ms,
+        .read_timeout_ms = timeout_ms,
+        .write_timeout_ms = timeout_ms,
+        .max_response_bytes = 65536,
+    });
+    defer client.deinit();
+    var response = try client.get(url);
+    defer response.deinit();
+    if (!response.isSuccess()) return false;
     const parsed = try std.json.parseFromSlice(struct { ready: bool }, allocator, response.body, .{ .ignore_unknown_fields = true }); defer parsed.deinit();
     return parsed.value.ready;
 }
@@ -76,7 +84,7 @@ pub fn run(allocator: std.mem.Allocator, directory: []const u8, launch: bool) !v
     for (config.cluster.nodes) |node| {
         if (!node.local) continue;
         const settings = try configuration.load(allocator, node.settings_path);
-        if (!std.mem.eql(u8, settings.runtime.data_path, node.data_path)) return error.NodeStorageConfigurationMismatch;
+        if (!std.mem.eql(u8, settings.runtime.data_dir, node.data_path)) return error.NodeStorageConfigurationMismatch;
         const executable = try std.fs.path.join(allocator, &.{ config.node.executable_path, "search-node" });
         const argv = try allocator.dupe([]const u8, &.{ executable, "serve", node.settings_path });
         var child = std.process.Child.init(argv, allocator);

@@ -1,201 +1,382 @@
 const std = @import("std");
 
-pub const Link = struct { url: []const u8, start: usize };
-pub const Paragraph = struct { start: usize, end: usize, depth: u32, element: []const u8 };
-pub const Result = struct { title: []u8, text: []u8, language: []u8, canonical: ?[]const u8, links: []Link, paragraphs: []Paragraph };
-
-const Attribute = struct { name: []const u8, value: []const u8 };
-const Attributes = struct {
-    text: []const u8,
-    offset: usize = 0,
-
-    fn next(self: *Attributes) ?Attribute {
-        while (self.offset < self.text.len and (std.ascii.isWhitespace(self.text[self.offset]) or self.text[self.offset] == '/')) self.offset += 1;
-        if (self.offset == self.text.len) return null;
-        const start = self.offset;
-        while (self.offset < self.text.len and !std.ascii.isWhitespace(self.text[self.offset]) and self.text[self.offset] != '=' and self.text[self.offset] != '/') self.offset += 1;
-        const name = self.text[start..self.offset];
-        while (self.offset < self.text.len and std.ascii.isWhitespace(self.text[self.offset])) self.offset += 1;
-        if (self.offset == self.text.len or self.text[self.offset] != '=') return .{ .name = name, .value = "" };
-        self.offset += 1;
-        while (self.offset < self.text.len and std.ascii.isWhitespace(self.text[self.offset])) self.offset += 1;
-        if (self.offset == self.text.len) return .{ .name = name, .value = "" };
-        const quote = self.text[self.offset];
-        if (quote == '\'' or quote == '"') {
-            self.offset += 1;
-            const value_start = self.offset;
-            while (self.offset < self.text.len and self.text[self.offset] != quote) self.offset += 1;
-            const value = self.text[value_start..self.offset];
-            if (self.offset < self.text.len) self.offset += 1;
-            return .{ .name = name, .value = value };
-        }
-        const value_start = self.offset;
-        while (self.offset < self.text.len and !std.ascii.isWhitespace(self.text[self.offset])) self.offset += 1;
-        return .{ .name = name, .value = self.text[value_start..self.offset] };
-    }
+pub const ParseError = error{
+    DepthLimitExceeded,
+    NodeLimitExceeded,
+    AttributeLimitExceeded,
+    BufferExhausted,
 };
 
-fn entity(name: []const u8) ?u21 {
-    if (name.len > 1 and name[0] == '#') {
-        const hexadecimal = name.len > 2 and (name[1] == 'x' or name[1] == 'X');
-        const code = std.fmt.parseInt(u21, name[if (hexadecimal) 2 else 1 ..], if (hexadecimal) 16 else 10) catch return null;
-        if (code == 0 or code > 0x10FFFF or (code >= 0xD800 and code <= 0xDFFF)) return 0xFFFD;
-        return code;
+pub const EventKind = enum(u8) {
+    start_tag,
+    end_tag,
+    self_closing,
+    text,
+    comment,
+    doctype,
+    script_content,
+    style_content,
+    cdata,
+    eof,
+};
+
+pub const Attribute = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
+pub const Event = struct {
+    kind: EventKind,
+    name: []const u8,
+    text: []const u8,
+    attributes: []const Attribute,
+    depth: u32,
+    offset: usize,
+};
+
+pub const Options = struct {
+    max_depth: u32 = 512,
+    max_nodes: u32 = 500000,
+    max_attribute_bytes: u32 = 65536,
+    decode_entities: bool = true,
+    emit_script_style_content: bool = false,
+    max_attribute_count: u32 = 128,
+};
+
+const void_elements = [_][]const u8{
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr",
+};
+
+const optional_close = [_][]const u8{ "li", "p", "td", "tr", "th", "thead", "tbody", "option", "dt", "dd" };
+
+fn isVoidElement(name: []const u8) bool {
+    for (void_elements) |candidate| {
+        if (std.ascii.eqlIgnoreCase(name, candidate)) return true;
     }
-    const names = .{ "amp", "lt", "gt", "quot", "apos", "nbsp", "copy", "reg", "ndash", "mdash", "hellip", "lsquo", "rsquo", "ldquo", "rdquo", "euro" };
-    const codes = [_]u21{ 38, 60, 62, 34, 39, 160, 169, 174, 8211, 8212, 8230, 8216, 8217, 8220, 8221, 8364 };
-    inline for (names, 0..) |key, index| if (std.mem.eql(u8, name, key)) return codes[index];
-    return null;
-}
-
-fn appendCode(output: *std.ArrayList(u8), code: u21, whitespace: bool) !void {
-    if (whitespace and (code == 160 or (code < 128 and std.ascii.isWhitespace(@intCast(code))))) {
-        if (output.items.len > 0 and output.items[output.items.len - 1] != ' ' and output.items[output.items.len - 1] != '\n') try output.append(' ');
-    } else {
-        var bytes: [4]u8 = undefined;
-        const length = try std.unicode.utf8Encode(code, &bytes);
-        try output.appendSlice(bytes[0..length]);
-    }
-}
-
-fn appendText(output: *std.ArrayList(u8), text: []const u8, whitespace: bool) !void {
-    var offset: usize = 0;
-    while (offset < text.len) {
-        if (text[offset] == '&') {
-            if (std.mem.indexOfScalar(u8, text[offset..@min(text.len, offset + 34)], ';')) |end| {
-                if (entity(text[offset + 1 .. offset + end])) |code| {
-                    try appendCode(output, code, whitespace);
-                    offset += end + 1;
-                    continue;
-                }
-            }
-        }
-        const length = std.unicode.utf8ByteSequenceLength(text[offset]) catch {
-            try appendCode(output, 0xFFFD, whitespace);
-            offset += 1;
-            continue;
-        };
-        if (text.len - offset < length) {
-            try appendCode(output, 0xFFFD, whitespace);
-            break;
-        }
-        const code = std.unicode.utf8Decode(text[offset..][0..length]) catch {
-            try appendCode(output, 0xFFFD, whitespace);
-            offset += 1;
-            continue;
-        };
-        try appendCode(output, code, whitespace);
-        offset += length;
-    }
-}
-
-fn decoded(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
-    try appendText(&output, text, false);
-    return output.toOwnedSlice();
-}
-
-fn block(tag: []const u8) bool {
-    inline for (.{ "p", "div", "section", "article", "header", "footer", "main", "nav", "li", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "table", "tr", "td", "br", "blockquote", "pre" }) |name| if (std.ascii.eqlIgnoreCase(tag, name)) return true;
     return false;
 }
 
-fn boundary(output: *std.ArrayList(u8)) !void {
-    while (output.items.len > 0 and output.items[output.items.len - 1] == ' ') _ = output.pop();
-    if (output.items.len > 0 and output.items[output.items.len - 1] != '\n') try output.append('\n');
+fn isOptionalClose(name: []const u8) bool {
+    for (optional_close) |candidate| {
+        if (std.ascii.eqlIgnoreCase(name, candidate)) return true;
+    }
+    return false;
 }
 
-pub fn parse(allocator: std.mem.Allocator, html: []const u8, maximum_depth: u32) !Result {
-    if (maximum_depth == 0) return error.InvalidParserDepth;
-    var text = std.ArrayList(u8).init(allocator);
-    errdefer text.deinit();
-    var title = std.ArrayList(u8).init(allocator);
-    errdefer title.deinit();
-    var links = std.ArrayList(Link).init(allocator);
-    errdefer links.deinit();
-    var paragraphs = std.ArrayList(Paragraph).init(allocator);
-    errdefer paragraphs.deinit();
-    var language: []u8 = try allocator.dupe(u8, "");
-    errdefer allocator.free(language);
-    var canonical: ?[]const u8 = null;
-    var offset: usize = 0;
-    var suppressed: ?[]const u8 = null;
-    var in_title = false;
-    var depth: u32 = 0;
-    var paragraph_start: usize = 0;
-    while (offset < html.len) {
-        if (html[offset] != '<') {
-            const end = std.mem.indexOfScalarPos(u8, html, offset, '<') orelse html.len;
-            if (suppressed == null) {
-                if (in_title) try appendText(&title, html[offset..end], true) else try appendText(&text, html[offset..end], true);
-            }
-            offset = end;
+pub fn decodeEntities(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    if (std.mem.indexOfScalar(u8, input, '&') == null) return allocator.dupe(u8, input);
+    var out = std.ArrayList(u8).init(allocator);
+    errdefer out.deinit();
+    var index: usize = 0;
+    while (index < input.len) {
+        if (input[index] != '&') {
+            try out.append(input[index]);
+            index += 1;
             continue;
         }
-        if (std.mem.startsWith(u8, html[offset..], "<!--")) {
-            offset = if (std.mem.indexOfPos(u8, html, offset + 4, "-->")) |end| end + 3 else html.len;
+        const semicolon = std.mem.indexOfScalarPos(u8, input, index, ';') orelse {
+            try out.append('&');
+            index += 1;
+            continue;
+        };
+        const body = input[index + 1 .. semicolon];
+        if (body.len == 0) {
+            try out.append('&');
+            index += 1;
             continue;
         }
-        var end = offset + 1;
-        var quote: ?u8 = null;
-        while (end < html.len) : (end += 1) {
-            const byte = html[end];
-            if (quote) |mark| {
-                if (byte == mark) quote = null;
-            } else if (byte == '\'' or byte == '"') {
-                quote = byte;
-            } else if (byte == '>') break;
-        }
-        if (end == html.len) {
-            if (suppressed == null and !in_title) try appendText(&text, html[offset..], true);
-            break;
-        }
-        const inside = std.mem.trim(u8, html[offset + 1 .. end], " \r\n\t");
-        offset = end + 1;
-        if (inside.len == 0 or inside[0] == '!' or inside[0] == '?') continue;
-        const closing = inside[0] == '/';
-        const content = if (closing) std.mem.trimLeft(u8, inside[1..], " \t\r\n") else inside;
-        var tag_end: usize = 0;
-        while (tag_end < content.len and !std.ascii.isWhitespace(content[tag_end]) and content[tag_end] != '/') tag_end += 1;
-        const tag = content[0..tag_end];
-        if (suppressed) |name| {
-            if (closing and std.ascii.eqlIgnoreCase(tag, name)) suppressed = null;
+        if (body[0] == '#') {
+            const is_hex = body.len > 1 and (body[1] == 'x' or body[1] == 'X');
+            const digits = if (is_hex) body[2..] else body[1..];
+            const codepoint = std.fmt.parseInt(u32, digits, if (is_hex) 16 else 10) catch {
+                try out.appendSlice(input[index..semicolon]);
+                index = semicolon;
+                continue;
+            };
+            var buffer: [4]u8 = undefined;
+            const length = std.unicode.utf8Encode(@intCast(codepoint), &buffer) catch {
+                index = semicolon + 1;
+                continue;
+            };
+            try out.appendSlice(buffer[0..length]);
+            index = semicolon + 1;
             continue;
         }
-        if (std.ascii.eqlIgnoreCase(tag, "script") or std.ascii.eqlIgnoreCase(tag, "style") or std.ascii.eqlIgnoreCase(tag, "template")) {
-            if (!closing) suppressed = tag;
+        if (namedEntity(body)) |replacement| {
+            try out.appendSlice(replacement);
+            index = semicolon + 1;
             continue;
         }
-        if (std.ascii.eqlIgnoreCase(tag, "title")) { in_title = !closing; continue; }
-        if (closing) depth -|= 1 else if (!std.ascii.eqlIgnoreCase(tag, "br") and !std.ascii.eqlIgnoreCase(tag, "img") and !std.ascii.eqlIgnoreCase(tag, "meta") and !std.ascii.eqlIgnoreCase(tag, "link") and !std.mem.endsWith(u8, inside, "/")) {
-            depth = try std.math.add(u32, depth, 1);
-            if (depth > maximum_depth) return error.HtmlDepthExceeded;
-        }
-        if (block(tag)) {
-            try boundary(&text);
-            if (text.items.len > paragraph_start) try paragraphs.append(.{ .start = paragraph_start, .end = text.items.len, .depth = depth, .element = try allocator.dupe(u8, tag) });
-            paragraph_start = text.items.len;
-        }
-        if (closing) continue;
-        var attributes = Attributes{ .text = content[tag_end..] };
-        var href: ?[]const u8 = null;
-        var relation: ?[]const u8 = null;
-        while (attributes.next()) |attribute| {
-            if (std.ascii.eqlIgnoreCase(attribute.name, "href")) href = attribute.value;
-            if (std.ascii.eqlIgnoreCase(attribute.name, "rel")) relation = attribute.value;
-            if (std.ascii.eqlIgnoreCase(tag, "html") and std.ascii.eqlIgnoreCase(attribute.name, "lang")) {
-                const replacement = try decoded(allocator, attribute.value);
-                allocator.free(language);
-                language = replacement;
-            }
-        }
-        if (href) |url| {
-            if (std.ascii.eqlIgnoreCase(tag, "a")) try links.append(.{ .url = try decoded(allocator, url), .start = text.items.len });
-            if (std.ascii.eqlIgnoreCase(tag, "link") and relation != null and std.ascii.eqlIgnoreCase(relation.?, "canonical")) canonical = try decoded(allocator, url);
-        }
+        try out.appendSlice(input[index .. semicolon + 1]);
+        index = semicolon + 1;
     }
-    try boundary(&text);
-    if (text.items.len > paragraph_start) try paragraphs.append(.{ .start = paragraph_start, .end = text.items.len, .depth = depth, .element = try allocator.dupe(u8, "body") });
-    return .{ .title = try title.toOwnedSlice(), .text = try text.toOwnedSlice(), .language = language, .canonical = canonical, .links = try links.toOwnedSlice(), .paragraphs = try paragraphs.toOwnedSlice() };
+    return out.toOwnedSlice();
+}
+
+fn namedEntity(body: []const u8) ?[]const u8 {
+    const table = .{
+        .{ "amp", "&" },
+        .{ "lt", "<" },
+        .{ "gt", ">" },
+        .{ "quot", "\"" },
+        .{ "apos", "'" },
+        .{ "nbsp", " " },
+        .{ "copy", "(c)" },
+        .{ "reg", "(r)" },
+        .{ "trade", "(tm)" },
+        .{ "hellip", "..." },
+        .{ "mdash", "-" },
+        .{ "ndash", "-" },
+        .{ "rsquo", "'" },
+        .{ "lsquo", "'" },
+        .{ "rdquo", "\"" },
+        .{ "ldquo", "\"" },
+        .{ "euro", "EUR" },
+        .{ "deg", "deg" },
+        .{ "times", "x" },
+    };
+    inline for (table) |entry| {
+        if (std.ascii.eqlIgnoreCase(body, entry[0])) return entry[1];
+    }
+    return null;
+}
+
+pub const Visitor = *const fn (context: *anyopaque, event: Event) anyerror!void;
+
+pub const Parser = struct {
+    allocator: std.mem.Allocator,
+    options: Options,
+    stack: std.ArrayList([]const u8),
+    depth: u32 = 0,
+    nodes: u32 = 0,
+    attributes: std.ArrayList(Attribute),
+    buffer: std.ArrayList(u8),
+
+    pub fn init(allocator: std.mem.Allocator, options: Options) Parser {
+        return .{
+            .allocator = allocator,
+            .options = options,
+            .stack = std.ArrayList([]const u8).init(allocator),
+            .attributes = std.ArrayList(Attribute).init(allocator),
+            .buffer = std.ArrayList(u8).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Parser) void {
+        self.clearAttributes();
+        self.stack.deinit();
+        self.attributes.deinit();
+        self.buffer.deinit();
+    }
+
+    fn clearAttributes(self: *Parser) void {
+        for (self.attributes.items) |attribute| {
+            self.allocator.free(attribute.name);
+            self.allocator.free(attribute.value);
+        }
+        self.attributes.clearRetainingCapacity();
+    }
+
+    fn push(self: *Parser, name: []const u8) !void {
+        if (self.depth >= self.options.max_depth) return ParseError.DepthLimitExceeded;
+        try self.stack.append(name);
+        self.depth += 1;
+    }
+
+    fn pop(self: *Parser) ?[]const u8 {
+        if (self.stack.items.len == 0) return null;
+        const name = self.stack.pop() orelse return null;
+        self.depth -|= 1;
+        return name;
+    }
+
+    pub fn parse(self: *Parser, html: []const u8, context: *anyopaque, visitor: Visitor) !void {
+        var index: usize = 0;
+        while (index < html.len) {
+            self.nodes += 1;
+            if (self.nodes > self.options.max_nodes) return ParseError.NodeLimitExceeded;
+            if (html[index] != '<') {
+                const start = index;
+                while (index < html.len and html[index] != '<') index += 1;
+                const raw = std.mem.trim(u8, html[start..index], " \t\r\n");
+                if (raw.len == 0) continue;
+                const text = if (self.options.decode_entities) try decodeEntities(self.allocator, raw) else try self.allocator.dupe(u8, raw);
+                defer self.allocator.free(text);
+                try visitor(context, .{
+                    .kind = .text,
+                    .name = "",
+                    .text = text,
+                    .attributes = &.{},
+                    .depth = self.depth,
+                    .offset = start,
+                });
+                continue;
+            }
+            if (index + 4 <= html.len and std.ascii.eqlIgnoreCase(html[index .. index + 4], "<!--")) {
+                const end = std.mem.indexOfPos(u8, html, index + 4, "-->") orelse html.len;
+                const content = html[index + 4 .. end];
+                try visitor(context, .{ .kind = .comment, .name = "", .text = content, .attributes = &.{}, .depth = self.depth, .offset = index });
+                index = if (end + 3 <= html.len) end + 3 else html.len;
+                continue;
+            }
+            if (index + 2 <= html.len and html[index + 1] == '!') {
+                const end = std.mem.indexOfScalarPos(u8, html, index + 2, '>') orelse html.len;
+                const content = html[index + 2 .. end];
+                const kind: EventKind = if (std.ascii.startsWithIgnoreCase(content, "[CDATA[")) .cdata else .doctype;
+                try visitor(context, .{ .kind = kind, .name = "", .text = content, .attributes = &.{}, .depth = self.depth, .offset = index });
+                index = if (end + 1 <= html.len) end + 1 else html.len;
+                continue;
+            }
+            index += 1;
+            var closing = false;
+            if (index < html.len and html[index] == '/') {
+                closing = true;
+                index += 1;
+            }
+            const name_start = index;
+            while (index < html.len and !std.ascii.isWhitespace(html[index]) and html[index] != '>' and html[index] != '/') index += 1;
+            const raw_name = html[name_start..index];
+            if (raw_name.len == 0) continue;
+            const name = try std.ascii.allocLowerString(self.allocator, raw_name);
+            defer self.allocator.free(name);
+            self.clearAttributes();
+            var self_closing = false;
+            while (index < html.len and html[index] != '>') {
+                while (index < html.len and std.ascii.isWhitespace(html[index])) index += 1;
+                if (index >= html.len or html[index] == '>') break;
+                if (html[index] == '/') {
+                    self_closing = true;
+                    index += 1;
+                    continue;
+                }
+                const attribute_start = index;
+                while (index < html.len and !std.ascii.isWhitespace(html[index]) and html[index] != '=' and html[index] != '>' and html[index] != '/') index += 1;
+                const attribute_name = html[attribute_start..index];
+                if (attribute_name.len == 0) {
+                    index += 1;
+                    continue;
+                }
+                var value: []const u8 = "";
+                while (index < html.len and std.ascii.isWhitespace(html[index])) index += 1;
+                if (index < html.len and html[index] == '=') {
+                    index += 1;
+                    while (index < html.len and std.ascii.isWhitespace(html[index])) index += 1;
+                    if (index < html.len and (html[index] == '"' or html[index] == '\'')) {
+                        const quote = html[index];
+                        index += 1;
+                        const value_start = index;
+                        while (index < html.len and html[index] != quote) index += 1;
+                        value = html[value_start..@min(index, html.len)];
+                        if (index < html.len) index += 1;
+                    } else {
+                        const value_start = index;
+                        while (index < html.len and !std.ascii.isWhitespace(html[index]) and html[index] != '>') index += 1;
+                        value = html[value_start..index];
+                    }
+                }
+                if (self.attributes.items.len >= self.options.max_attribute_count) continue;
+                if (value.len > self.options.max_attribute_bytes) value = value[0..self.options.max_attribute_bytes];
+                const decoded_value = if (self.options.decode_entities) try decodeEntities(self.allocator, value) else try self.allocator.dupe(u8, value);
+                const stored_name = try std.ascii.allocLowerString(self.allocator, attribute_name);
+                try self.attributes.append(.{ .name = stored_name, .value = decoded_value });
+            }
+            if (index < html.len and html[index] == '>') index += 1;
+            if (closing) {
+                var matched = false;
+                var depth_check: usize = 0;
+                while (depth_check < self.stack.items.len) : (depth_check += 1) {
+                    const candidate = self.stack.items[self.stack.items.len - 1 - depth_check];
+                    if (std.ascii.eqlIgnoreCase(candidate, name)) {
+                        matched = true;
+                        break;
+                    }
+                    if (!isOptionalClose(candidate)) break;
+                }
+                if (matched) {
+                    var closing_index: usize = 0;
+                    while (closing_index <= depth_check) : (closing_index += 1) {
+                        if (self.pop()) |closed| {
+                            try visitor(context, .{ .kind = .end_tag, .name = closed, .text = "", .attributes = &.{}, .depth = self.depth, .offset = index });
+                            self.allocator.free(closed);
+                        }
+                    }
+                } else {
+                    try visitor(context, .{ .kind = .end_tag, .name = try self.allocator.dupe(u8, name), .text = "", .attributes = &.{}, .depth = self.depth, .offset = index });
+                }
+                continue;
+            }
+            if (std.ascii.eqlIgnoreCase(name, "table") and self.stack.items.len > 0) {
+                const parent = self.stack.items[self.stack.items.len - 1];
+                if (std.ascii.eqlIgnoreCase(parent, "table")) {
+                    if (self.pop()) |closed| {
+                        try visitor(context, .{ .kind = .end_tag, .name = closed, .text = "", .attributes = &.{}, .depth = self.depth, .offset = index });
+                        self.allocator.free(closed);
+                    }
+                }
+            }
+            if (self.stack.items.len > 0 and isOptionalClose(self.stack.items[self.stack.items.len - 1]) and (std.ascii.eqlIgnoreCase(name, "p") or std.ascii.eqlIgnoreCase(name, "li") or std.ascii.eqlIgnoreCase(name, "tr") or std.ascii.eqlIgnoreCase(name, "td"))) {
+                if (self.pop()) |closed| {
+                    try visitor(context, .{ .kind = .end_tag, .name = closed, .text = "", .attributes = &.{}, .depth = self.depth, .offset = index });
+                    self.allocator.free(closed);
+                }
+            }
+            const stored_name = try self.allocator.dupe(u8, name);
+            errdefer self.allocator.free(stored_name);
+            try visitor(context, .{
+                .kind = if (self_closing or isVoidElement(name)) .self_closing else .start_tag,
+                .name = stored_name,
+                .text = "",
+                .attributes = self.attributes.items,
+                .depth = self.depth,
+                .offset = index,
+            });
+            if (self_closing or isVoidElement(name)) {
+                self.allocator.free(stored_name);
+            } else {
+                try self.push(stored_name);
+            }
+            self.clearAttributes();
+            if (std.ascii.eqlIgnoreCase(name, "script") or std.ascii.eqlIgnoreCase(name, "style")) {
+                const terminator = if (std.ascii.eqlIgnoreCase(name, "script")) "</script>" else "</style>";
+                const end = std.mem.indexOfPos(u8, html, index, terminator) orelse html.len;
+                const content = html[index..end];
+                if (self.options.emit_script_style_content) {
+                    try visitor(context, .{
+                        .kind = if (std.ascii.eqlIgnoreCase(name, "script")) .script_content else .style_content,
+                        .name = name,
+                        .text = content,
+                        .attributes = &.{},
+                        .depth = self.depth,
+                        .offset = index,
+                    });
+                }
+                if (self.pop()) |closed| {
+                    try visitor(context, .{ .kind = .end_tag, .name = closed, .text = "", .attributes = &.{}, .depth = self.depth, .offset = end });
+                    self.allocator.free(closed);
+                }
+                index = if (end + terminator.len <= html.len) end + terminator.len else html.len;
+            }
+        }
+        while (self.stack.items.len > 0) {
+            if (self.pop()) |closed| {
+                try visitor(context, .{ .kind = .end_tag, .name = closed, .text = "", .attributes = &.{}, .depth = self.depth, .offset = html.len });
+                self.allocator.free(closed);
+            }
+        }
+        try visitor(context, .{ .kind = .eof, .name = "", .text = "", .attributes = &.{}, .depth = 0, .offset = html.len });
+    }
+
+    pub fn reset(self: *Parser) void {
+        self.depth = 0;
+        self.nodes = 0;
+        self.stack.clearRetainingCapacity();
+        self.attributes.clearRetainingCapacity();
+    }
+};
+
+pub fn attributeValue(attributes: []const Attribute, name: []const u8) ?[]const u8 {
+    for (attributes) |attribute| {
+        if (std.ascii.eqlIgnoreCase(attribute.name, name)) return attribute.value;
+    }
+    return null;
 }

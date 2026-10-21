@@ -1,6 +1,6 @@
 const std = @import("std");
 const Candidate = @import("sparse_index.zig").Candidate;
-const Ranking = @import("../runtime/configuration.zig").Ranking;
+const Ranking = @import("../runtime/configuration.zig").RankingConfig;
 
 pub const Fused = struct { id: u64, score: f64 = 0, lexical_score: ?f64 = null, semantic_score: ?f64 = null };
 
@@ -14,13 +14,13 @@ pub fn fuse(allocator: std.mem.Allocator, sparse: []const Candidate, dense: []co
     for (sparse, 0..) |candidate, index| {
         const entry = try values.getOrPut(candidate.id);
         if (!entry.found_existing) entry.value_ptr.* = .{ .id = candidate.id };
-        entry.value_ptr.score += ranking.lexical_weight / (ranking.rrf_constant + @as(f64, @floatFromInt(index + 1)));
+        entry.value_ptr.score += ranking.fusion_sparse_weight / (ranking.fusion_rank_constant + @as(f64, @floatFromInt(index + 1)));
         entry.value_ptr.lexical_score = candidate.score;
     }
     for (dense, 0..) |candidate, index| {
         const entry = try values.getOrPut(candidate.id);
         if (!entry.found_existing) entry.value_ptr.* = .{ .id = candidate.id };
-        entry.value_ptr.score += ranking.semantic_weight / (ranking.rrf_constant + @as(f64, @floatFromInt(index + 1)));
+        entry.value_ptr.score += ranking.fusion_dense_weight / (ranking.fusion_rank_constant + @as(f64, @floatFromInt(index + 1)));
         entry.value_ptr.semantic_score = candidate.score;
     }
     var output = std.ArrayList(Fused).init(allocator);

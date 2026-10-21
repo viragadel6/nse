@@ -12,10 +12,17 @@ fn report(mode: []const u8, path: []const u8, err: anyerror) void {
 fn post(allocator: std.mem.Allocator, config: deployment.Worker, route: []const u8, payload: []const u8) ![]u8 {
     const url = try std.fmt.allocPrint(allocator, "{s}{s}", .{ std.mem.trimRight(u8, config.api_endpoint, "/"), route });
     defer allocator.free(url);
-    const response = try http.request(allocator, .POST, url, payload, config.response_bytes, config.timeout_ms);
-    errdefer allocator.free(response.body);
-    if (response.status != .ok and response.status != .created) return error.WorkerApiOperationFailed;
-    return response.body;
+    var client = http.Client.init(allocator, .{
+        .connect_timeout_ms = config.timeout_ms,
+        .read_timeout_ms = config.timeout_ms,
+        .write_timeout_ms = config.timeout_ms,
+        .max_response_bytes = config.response_bytes,
+    });
+    defer client.deinit();
+    var response = try client.post(url, &.{ .{ .name = "content-type", .value = "application/json" } }, payload);
+    defer response.deinit();
+    if (!response.isSuccess()) return error.WorkerApiOperationFailed;
+    return allocator.dupe(u8, response.body);
 }
 
 fn discover(allocator: std.mem.Allocator, path: []const u8, url: []const u8) !void {
@@ -56,7 +63,6 @@ fn process(allocator: std.mem.Allocator, config: deployment.Worker, mode: []cons
     const destination = try std.fs.path.join(allocator, &.{ directory, "completed", name }); defer allocator.free(destination);
     try std.fs.cwd().rename(path, destination);
     var parent = try std.fs.cwd().openDir(directory, .{ .iterate = true }); defer parent.close();
-    try std.posix.fsync(parent.fd);
 }
 
 pub fn run(allocator: std.mem.Allocator, mode: []const u8, directory: []const u8) !void {

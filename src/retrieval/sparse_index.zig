@@ -1,9 +1,9 @@
 const std = @import("std");
 const tokenizer = @import("../models/tokenizer.zig");
 const Document = @import("../storage/document.zig").Document;
-const Store = @import("../storage/document_store.zig").Store;
+const Store = @import("../storage/document_collection.zig").Store;
 const bm25 = @import("bm25.zig");
-const Ranking = @import("../runtime/configuration.zig").Ranking;
+const Ranking = @import("../runtime/configuration.zig").RankingConfig;
 const Deadline = @import("../runtime/cancellation.zig").Deadline;
 
 pub const Posting = struct { id: u64, body: u32 = 0, title: u32 = 0, url: u32 = 0 };
@@ -73,7 +73,7 @@ pub const Index = struct {
         var result = init(allocator);
         errdefer result.deinit();
         var iterator = store.entries.valueIterator();
-        while (iterator.next()) |entry| try result.add(entry.*);
+        while (iterator.next()) |entry| try result.add(entry);
         return result;
     }
 
@@ -105,7 +105,7 @@ pub const Index = struct {
             if (self.terms.get(term)) |postings| {
                 for (postings.items, 0..) |posting, position| {
                     if (position % 256 == 0) try deadline.check();
-                    const tf = @as(f64, @floatFromInt(posting.body)) + ranking.title_weight * @as(f64, @floatFromInt(posting.title)) + ranking.url_weight * @as(f64, @floatFromInt(posting.url));
+                    const tf = @as(f64, @floatFromInt(posting.body)) + ranking.title_field_weight * @as(f64, @floatFromInt(posting.title)) + ranking.url_field_weight * @as(f64, @floatFromInt(posting.url));
                     const value = bm25.score(self.lengths.count(), postings.items.len, tf, self.lengths.get(posting.id).?, average, ranking.bm25_k1, ranking.bm25_b);
                     const entry = try scores.getOrPut(posting.id);
                     if (!entry.found_existing) entry.value_ptr.* = 0;

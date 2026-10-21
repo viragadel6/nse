@@ -1,5 +1,5 @@
 const std = @import("std");
-const Store = @import("../storage/document_store.zig").Store;
+const Store = @import("../storage/document_collection.zig").Store;
 const Candidate = @import("../retrieval/sparse_index.zig").Candidate;
 const Deadline = @import("../runtime/cancellation.zig").Deadline;
 const quantization = @import("binary_quantization.zig");
