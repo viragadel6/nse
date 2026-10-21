@@ -1,5 +1,5 @@
 const std = @import("std");
-const Configuration = @import("configuration.zig").Configuration;
+const Configuration = @import("configuration.zig").Config;
 const cancellation = @import("cancellation.zig");
 const Store = @import("../storage/document_store.zig").Store;
 const Mutation = @import("../storage/document_store.zig").Mutation;
@@ -61,8 +61,8 @@ pub const Engine = struct {
     ready: bool = true,
 
     pub fn open(allocator: std.mem.Allocator, config: Configuration) !Engine {
-        const record_bytes = try std.math.add(u32, config.api.body_bytes, 65536);
-        var store = try Store.open(allocator, config.runtime.data_path, record_bytes);
+        const record_bytes = try std.math.add(u32, config.api.max_request_bytes, 65536);
+        var store = try Store.open(allocator, config.runtime.data_dir, record_bytes);
         errdefer store.close();
         var sparse_index = try sparse.Index.build(allocator, &store);
         errdefer sparse_index.deinit();

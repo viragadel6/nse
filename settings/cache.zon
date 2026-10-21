@@ -1,0 +1,18 @@
+.{
+    .query_embedding_capacity = 262144,
+    .query_embedding_ttl_ms = 3600000,
+    .cluster_posting_capacity_bytes = 2147483648,
+    .cluster_posting_ttl_ms = 600000,
+    .rendered_response_capacity = 65536,
+    .rendered_response_ttl_ms = 60000,
+    .coalesce_concurrent_requests = true,
+    .coalesce_max_waiters = 256,
+    .eviction_policy = "lru",
+    .generation_aware = true,
+    .invalidate_on_model_change = true,
+    .invalidate_on_index_generation_change = true,
+    .shards = 64,
+    .stats_interval_ms = 10000,
+    .negative_cache_enabled = true,
+    .negative_cache_ttl_ms = 5000,
+}

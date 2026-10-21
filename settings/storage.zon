@@ -1,0 +1,17 @@
+.{
+    .document_dir = "data/documents",
+    .metadata_dir = "data/metadata",
+    .graph_dir = "data/graph",
+    .checkpoint_dir = "data/checkpoints",
+    .transaction_log_dir = "data/txlog",
+    .segment_target_bytes = 1073741824,
+    .write_buffer_bytes = 67108864,
+    .compression_enabled = true,
+    .compression_level = 1,
+    .sync_on_write = false,
+    .retention_days = 180,
+    .max_open_segments = 64,
+    .bloom_bits_per_key = 10.0,
+    .verify_checksums_on_read = true,
+    .recovery_verify = true,
+}

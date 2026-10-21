@@ -45,10 +45,10 @@ pub fn run(default_command: []const u8) !void {
         const bytes = try std.fs.cwd().readFileAlloc(temporary, args[start + 1], 64 * 1024 * 1024);
         var request = try protocol.parse(protocol.TrainingRequest, temporary, bytes);
         const supplied = try protocol.parse(std.json.Value, temporary, bytes);
-        try config.training.defaults(&request.value, supplied.value);
+        try config.training.applyTrainingDefaults(&request.value, supplied.value);
         const submission = try modal.submit(temporary, config.model.workload_endpoint, request.value, config.runtime.connection_timeout_ms);
         const record = try std.json.stringifyAlloc(temporary, .{ .request = request.value, .submission = submission.value }, .{});
-        const path = try std.fmt.allocPrint(temporary, "{s}/gpu_jobs/{s}.json", .{ config.runtime.data_path, request.value.job_id });
+        const path = try std.fmt.allocPrint(temporary, "{s}/gpu_jobs/{s}.json", .{ config.runtime.data_dir, request.value.job_id });
         try artifacts.atomicWrite(temporary, path, record);
         return output(submission.value);
     }
@@ -70,16 +70,16 @@ pub fn run(default_command: []const u8) !void {
     }
     if (std.mem.eql(u8, command, "embed-batch")) {
         if (args.len <= start + 1) return error.MissingEmbeddingInput;
-        const bytes = try std.fs.cwd().readFileAlloc(temporary, args[start + 1], config.api.body_bytes);
+        const bytes = try std.fs.cwd().readFileAlloc(temporary, args[start + 1], config.api.max_request_bytes);
         const items = try protocol.parse([]const protocol.Item, temporary, bytes);
         const result = try inference.batch(temporary, config.model, items.value, config.runtime.connection_timeout_ms);
         return output(result.value);
     }
     if (std.mem.eql(u8, command, "embed")) {
         if (args.len <= start + 1) return error.MissingInputPath;
-        const text = try std.fs.cwd().readFileAlloc(temporary, args[start + 1], config.api.body_bytes);
+        const text = try std.fs.cwd().readFileAlloc(temporary, args[start + 1], config.api.max_request_bytes);
         const embedding = try inference.embed(temporary, config.model, text, .document, config.runtime.connection_timeout_ms);
-        try output(.{ .embedding = embedding, .model_version = config.model.model_version, .dimensions = config.model.dimensions });
+        try output(.{ .embedding = embedding, .model_version = config.model.model_version, .dimensions = config.model.primary_dim });
         return;
     }
     var engine = try Engine.open(allocator, config);
@@ -96,7 +96,7 @@ pub fn run(default_command: []const u8) !void {
     if (args.len <= start + 1) return error.MissingInputPath;
     if (std.mem.eql(u8, command, "crawl")) return output(try fetcher.fetch(&engine, temporary, args[start + 1]));
     if (std.mem.eql(u8, command, "search")) {
-        const bytes = try std.fs.cwd().readFileAlloc(temporary, args[start + 1], config.api.body_bytes);
+        const bytes = try std.fs.cwd().readFileAlloc(temporary, args[start + 1], config.api.max_request_bytes);
         const parsed = try codec.parse(codec.Search, temporary, bytes);
         defer parsed.deinit();
         return output(try engine.search(temporary, parsed.value));
@@ -110,7 +110,7 @@ pub fn run(default_command: []const u8) !void {
             var record_arena = std.heap.ArenaAllocator.init(allocator);
             defer record_arena.deinit();
             const record_allocator = record_arena.allocator();
-            const line = try reader.readUntilDelimiterOrEofAlloc(record_allocator, '\n', config.api.body_bytes) orelse break;
+            const line = try reader.readUntilDelimiterOrEofAlloc(record_allocator, '\n', config.api.max_request_bytes) orelse break;
             const trimmed = std.mem.trim(u8, line, " \r\t");
             if (trimmed.len == 0) continue;
             const parsed = try codec.parse(documents.Input, record_allocator, trimmed);
