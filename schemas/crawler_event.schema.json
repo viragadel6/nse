@@ -1,0 +1,17 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "required": ["event_type", "url", "timestamp_ms"],
+    "properties": {
+        "event_type": { "type": "string", "enum": ["discovered", "fetched", "failed", "redirected", "expired", "recrawled"] },
+        "url": { "type": "string", "format": "uri" },
+        "canonical_url": { "type": "string", "format": "uri" },
+        "domain_id": { "type": "integer" },
+        "fetch_state": { "type": "string" },
+        "http_status": { "type": "integer" },
+        "content_fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "timestamp_ms": { "type": "integer", "minimum": 0 },
+        "retry_count": { "type": "integer", "minimum": 0 },
+        "priority": { "type": "integer" }
+    }
+}
