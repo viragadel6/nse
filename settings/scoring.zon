@@ -1,0 +1,12 @@
+{
+    .subvector_width = 4,
+    .lookup_mode = "register",
+    .norm_compensation = "l2_ratio",
+    .dithering_enabled = false,
+    .dither_seed = 0x5eed_5eed,
+    .simd_arch = "auto",
+    .block_bytes = 4096,
+    .prefetch_distance = 64,
+    .cache_line_bytes = 64,
+    .tie_break = "document_id",
+}

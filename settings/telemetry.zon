@@ -1,0 +1,12 @@
+{
+    .metrics_enabled = true,
+    .tracing_enabled = true,
+    .sample_rate = 0.01,
+    .histogram_buckets = [1, 5, 10, 25, 50, 100, 250, 500, 1000],
+    .export_interval_ms = 15000,
+    .anomaly_window_ms = 300000,
+    .anomaly_z_threshold = 3.5,
+    .drift_threshold = 0.15,
+    .export_endpoint = "",
+    .buffered_events = 10000,
+}

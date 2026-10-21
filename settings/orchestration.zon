@@ -1,0 +1,14 @@
+{
+    .dag_threads = 8,
+    .max_dag_depth = 16,
+    .branch_timeout_ms = 5000,
+    .speculative_enabled = true,
+    .speculative_cost_limit_ms = 2000,
+    .interactive_queue_capacity = 4096,
+    .research_queue_capacity = 1024,
+    .research_max_steps = 32,
+    .research_max_minutes = 30,
+    .gpu_batch_max = 256,
+    .gpu_batch_timeout_ms = 50,
+    .reserved_interactive_cores = 2,
+}
