@@ -157,6 +157,18 @@ pub const Client = struct {
     bytes_received: u64 = 0,
     gzip_decoded: u64 = 0,
 
+    ca_bundle: ?*std.crypto.Certificate.Bundle = null,
+
+    fn certificateBundle(self: *Client) !*std.crypto.Certificate.Bundle {
+        if (self.ca_bundle) |bundle| return bundle;
+        const bundle = try self.allocator.create(std.crypto.Certificate.Bundle);
+        errdefer self.allocator.destroy(bundle);
+        bundle.* = .{};
+        try bundle.rescan(self.allocator);
+        self.ca_bundle = bundle;
+        return bundle;
+    }
+
     pub fn init(allocator: std.mem.Allocator, options: RequestOptions) Client {
         return .{
             .allocator = allocator,
@@ -171,6 +183,11 @@ pub const Client = struct {
 
     pub fn deinit(self: *Client) void {
         self.pool.deinit();
+        if (self.ca_bundle) |bundle| {
+            bundle.deinit(self.allocator);
+            self.allocator.destroy(bundle);
+            self.ca_bundle = null;
+        }
     }
 
     pub fn get(self: *Client, url: []const u8) !Response {
@@ -211,11 +228,28 @@ pub const Client = struct {
         const started = time.StopWatch.start();
         var response = Response{ .allocator = self.allocator };
         errdefer response.deinit();
-        if (url.secure) return HttpError.TlsUnavailable;
         var connection = self.pool.acquire(url.host, url.port) catch |err| {
             self.failures += 1;
             return mapError(err);
         };
+        if (url.secure) {
+            const bundle = self.certificateBundle() catch {
+                connection.close();
+                self.failures += 1;
+                return HttpError.TlsUnavailable;
+            };
+            connection.upgradeTls(self.allocator, url.host, bundle) catch {
+                connection.close();
+                self.failures += 1;
+                return HttpError.ConnectionFailed;
+            };
+        } else if (connection.tls != null) {
+            connection.close();
+            connection = self.pool.acquire(url.host, url.port) catch |err| {
+                self.failures += 1;
+                return mapError(err);
+            };
+        }
         var request: std.ArrayListUnmanaged(u8) = .{};
         defer request.deinit(self.allocator);
         const target = try url.requestPath(self.allocator);
@@ -297,11 +331,13 @@ pub const Client = struct {
         }
         var payload: std.ArrayListUnmanaged(u8) = .{};
         defer payload.deinit(self.allocator);
-        try payload.appendSlice(self.allocator, buffer.items[body_start..]);
         if (chunked) {
-            try readChunked(&connection, &payload, self.options.max_response_bytes, self.allocator);
-        } else if (content_length) |expected| {
-            if (expected > self.options.max_response_bytes) return HttpError.ResponseTooLarge;
+            try readChunked(&connection, buffer.items[body_start..], &payload, self.options.max_response_bytes, self.allocator);
+        } else {
+            try payload.appendSlice(self.allocator, buffer.items[body_start..]);
+        }
+        if (content_length) |expected| {
+            if (!chunked and expected > self.options.max_response_bytes) return HttpError.ResponseTooLarge;
             while (payload.items.len < expected) {
                 var chunk: [65536]u8 = undefined;
                 const read = connection.readSome(&chunk) catch |err| return mapError(err);
@@ -345,37 +381,62 @@ pub const Client = struct {
     }
 };
 
-fn readChunked(connection: *transport.Connection, payload: *std.ArrayListUnmanaged(u8), limit: u32, allocator: std.mem.Allocator) !void {
+const ChunkReader = struct {
+    connection: *transport.Connection,
+    pending: []const u8,
+    offset: usize = 0,
+
+    fn readAtLeast(self: *ChunkReader, buffer: []u8, minimum: usize) HttpError!usize {
+        var total: usize = 0;
+        while (total < minimum) {
+            if (self.offset < self.pending.len) {
+                const available = @min(self.pending.len - self.offset, buffer.len - total);
+                @memcpy(buffer[total .. total + available], self.pending[self.offset .. self.offset + available]);
+                self.offset += available;
+                total += available;
+                if (total >= minimum) return total;
+            }
+            const read = self.connection.readSome(buffer[total..]) catch return HttpError.Closed;
+            if (read == 0) return HttpError.Closed;
+            total += read;
+        }
+        return total;
+    }
+};
+
+fn readChunked(connection: *transport.Connection, prefix: []const u8, payload: *std.ArrayListUnmanaged(u8), limit: u32, allocator: std.mem.Allocator) !void {
+    var reader = ChunkReader{ .connection = connection, .pending = prefix };
     while (true) {
         var size_line: [64]u8 = undefined;
         var length: usize = 0;
         while (length < size_line.len) {
             var byte: [1]u8 = undefined;
-            const read = connection.readAtLeast(&byte, 1) catch return HttpError.ChunkedEncodingError;
-            _ = read;
+            _ = try reader.readAtLeast(&byte, 1);
             if (byte[0] == '\n') break;
             if (byte[0] != '\r') {
                 size_line[length] = byte[0];
                 length += 1;
             }
         }
-        const chunk_size = std.fmt.parseInt(usize, size_line[0..length], 16) catch return HttpError.ChunkedEncodingError;
+        const declared = size_line[0..length];
+        const size_end = std.mem.indexOfScalar(u8, declared, ';') orelse declared.len;
+        const chunk_size = std.fmt.parseInt(usize, declared[0..size_end], 16) catch return HttpError.ChunkedEncodingError;
         if (chunk_size == 0) {
             var terminator: [2]u8 = undefined;
-            _ = connection.readAtLeast(&terminator, 2) catch {};
+            _ = reader.readAtLeast(&terminator, 2) catch {};
             return;
         }
         var remaining = chunk_size;
         while (remaining > 0) {
             var chunk: [65536]u8 = undefined;
             const want = @min(chunk.len, remaining);
-            const read = connection.readAtLeast(chunk[0..want], 1) catch return HttpError.ChunkedEncodingError;
+            const read = try reader.readAtLeast(chunk[0..want], 1);
             try payload.appendSlice(allocator, chunk[0..read]);
             remaining -= read;
             if (payload.items.len > limit) return HttpError.ResponseTooLarge;
         }
         var terminator: [2]u8 = undefined;
-        _ = connection.readAtLeast(&terminator, 2) catch {};
+        _ = reader.readAtLeast(&terminator, 2) catch {};
     }
 }
 

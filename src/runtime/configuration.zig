@@ -323,6 +323,7 @@ pub const RankingConfig = struct {
     fusion_sparse_weight: f64 = 1.0,
     fusion_dense_weight: f64 = 1.15,
     fusion_vertical_weight: f64 = 1.05,
+    fusion_freshness_weight: f64 = 0.05,
     lexical_normalization: []const u8 = "minmax",
     semantic_normalization: []const u8 = "zscore",
     rerank_enabled: bool = true,
@@ -624,6 +625,7 @@ pub fn validate(config: Config) ConfigurationError!void {
     try require(config.ranking.default_candidate_count > 0, "ranking.default_candidate_count");
     try require(config.ranking.expanded_candidate_count >= config.ranking.default_candidate_count, "ranking.expanded_candidate_count");
     try require(config.ranking.fusion_rank_constant > 0.0, "ranking.fusion_rank_constant");
+    try require(config.ranking.fusion_freshness_weight >= 0.0, "ranking.fusion_freshness_weight");
     try require(config.ranking.rerank_candidate_count > 0, "ranking.rerank_candidate_count");
 
     try require(config.orchestration.default_deadline_ms > 0, "orchestration.default_deadline_ms");

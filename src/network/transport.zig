@@ -25,6 +25,18 @@ pub const Options = struct {
     send_buffer_bytes: u32 = 262144,
 };
 
+pub const TlsSession = struct {
+    client: std.crypto.tls.Client,
+    stream: std.net.Stream,
+    host: []u8,
+    allocator: std.mem.Allocator,
+
+    fn release(self: *TlsSession) void {
+        self.allocator.free(self.host);
+        self.allocator.destroy(self);
+    }
+};
+
 pub const Connection = struct {
     handle: std.posix.fd_t,
     address: std.net.Address,
@@ -33,6 +45,7 @@ pub const Connection = struct {
     bytes_received: u64 = 0,
     last_used_ms: i64 = 0,
     in_use: bool = false,
+    tls: ?*TlsSession = null,
 
     pub fn connect(host: []const u8, port: u16, options: Options) TransportError!Connection {
         const parsed = AddressBook.resolve(host, port) catch return TransportError.InvalidAddress;
@@ -44,21 +57,52 @@ pub const Connection = struct {
         std.posix.connect(socket, &parsed.any, parsed.getOsSockLen()) catch {
             return TransportError.ConnectionFailed;
         };
-        return .{ .handle = socket, .address = parsed, .options = options, .last_used_ms = time.nowMs() };
+        return .{ .handle = socket, .address = parsed, .options = options, .last_used_ms = time.nowMs(), .tls = null };
     }
 
     pub fn fromHandle(handle: std.posix.fd_t, address: std.net.Address, options: Options) Connection {
         applySocketOptions(handle, options);
-        return .{ .handle = handle, .address = address, .options = options, .last_used_ms = time.nowMs() };
+        return .{ .handle = handle, .address = address, .options = options, .last_used_ms = time.nowMs(), .tls = null };
     }
 
     pub fn close(self: *Connection) void {
-        std.posix.shutdown(self.handle, .both) catch {};
-        std.posix.close(self.handle);
+        if (self.tls) |session| {
+            session.release();
+            self.tls = null;
+        }
+        if (self.handle >= 0) {
+            std.posix.shutdown(self.handle, .both) catch {};
+            std.posix.close(self.handle);
+        }
         self.handle = -1;
     }
 
+    pub fn upgradeTls(self: *Connection, allocator: std.mem.Allocator, host: []const u8, ca: *std.crypto.Certificate.Bundle) TransportError!void {
+        if (self.tls != null) return;
+        const session = allocator.create(TlsSession) catch return TransportError.SocketError;
+        errdefer allocator.destroy(session);
+        const name = allocator.dupe(u8, host) catch return TransportError.SocketError;
+        errdefer allocator.free(name);
+        session.* = .{
+            .client = undefined,
+            .stream = .{ .handle = self.handle },
+            .host = name,
+            .allocator = allocator,
+        };
+        session.client = std.crypto.tls.Client.init(session.stream, .{
+            .host = .{ .explicit = name },
+            .ca = .{ .bundle = ca.* },
+        }) catch return TransportError.ConnectionFailed;
+        self.tls = session;
+    }
+
     pub fn writeAll(self: *Connection, data: []const u8) TransportError!void {
+        if (self.tls) |session| {
+            session.client.writeAll(session.stream, data) catch return TransportError.SocketError;
+            self.bytes_sent += data.len;
+            self.last_used_ms = time.nowMs();
+            return;
+        }
         var offset: usize = 0;
         while (offset < data.len) {
             const written = std.posix.write(self.handle, data[offset..]) catch |err| return mapWriteError(err);
@@ -70,6 +114,17 @@ pub const Connection = struct {
     }
 
     pub fn readAtLeast(self: *Connection, buffer: []u8, minimum: usize) TransportError!usize {
+        if (self.tls) |session| {
+            var total: usize = 0;
+            while (total < minimum) {
+                const read = session.client.readAtLeast(session.stream, buffer[total..], 1) catch return TransportError.SocketError;
+                if (read == 0) return TransportError.ConnectionClosed;
+                total += read;
+            }
+            self.bytes_received += total;
+            self.last_used_ms = time.nowMs();
+            return total;
+        }
         var total: usize = 0;
         while (total < minimum) {
             const read = std.posix.read(self.handle, buffer[total..]) catch |err| return mapReadError(err);
@@ -82,6 +137,13 @@ pub const Connection = struct {
     }
 
     pub fn readSome(self: *Connection, buffer: []u8) TransportError!usize {
+        if (self.tls) |session| {
+            const read = session.client.read(session.stream, buffer) catch return TransportError.SocketError;
+            if (read == 0) return TransportError.ConnectionClosed;
+            self.bytes_received += read;
+            self.last_used_ms = time.nowMs();
+            return read;
+        }
         const read = std.posix.read(self.handle, buffer) catch |err| return mapReadError(err);
         if (read == 0) return TransportError.ConnectionClosed;
         self.bytes_received += read;

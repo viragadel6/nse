@@ -33,6 +33,9 @@ pub const CrawlEvent = struct {
     source_url: []const u8,
     content_hash: u64,
     title: []const u8,
+    text: []const u8,
+    quality: f32,
+    published_ms: i64,
     status: u16,
     text_length: u32,
     link_count: u32,
@@ -44,6 +47,7 @@ pub const CrawlEvent = struct {
         self.allocator.free(self.url);
         self.allocator.free(self.source_url);
         self.allocator.free(self.title);
+        if (self.text.len > 0) self.allocator.free(self.text);
     }
 };
 
@@ -70,6 +74,7 @@ pub const Options = struct {
     follow_external_links: bool = true,
     deduplicate: bool = true,
     collect_events: bool = true,
+    include_text: bool = true,
     max_depth: u32 = 512,
     max_text_bytes: usize = 4194304,
 };
@@ -196,13 +201,13 @@ pub const Coordinator = struct {
         if (result.outcome == .denied) {
             self.pages_denied += 1;
             try self.frontier_ref.reject(record.canonical_hash, .denied_access);
-            try self.emit(.denied, record, &result, 0, 0, 0, "");
+            try self.emit(.denied, record, &result, 0, 0, 0, "", "", 0.0, 0);
             return false;
         }
         if (result.outcome == .challenge) {
             self.pages_challenged += 1;
             try self.frontier_ref.reschedule(record.canonical_hash, 3600000);
-            try self.emit(.challenge, record, &result, 0, 0, 0, "");
+            try self.emit(.challenge, record, &result, 0, 0, 0, "", "", 0.0, 0);
             return false;
         }
         if (result.outcome == .redirect) {
@@ -210,7 +215,7 @@ pub const Coordinator = struct {
             if (result.redirect_target.len > 0) {
                 const resolved = try canonicalization.resolveReference(self.allocator, record.canonical_url, result.redirect_target);
                 defer self.allocator.free(resolved);
-                const canonical = canonicalization.canonicalize(self.allocator, resolved, "", &.{}, .{}) catch |err| switch (err) {
+                var canonical = canonicalization.canonicalize(self.allocator, resolved, "", &.{}, .{}) catch |err| switch (err) {
                     error.UnsupportedScheme, error.InvalidUrl, error.RedirectLoop, error.TooManyRedirects => return false,
                     else => return err,
                 };
@@ -219,26 +224,26 @@ pub const Coordinator = struct {
             } else {
                 try self.frontier_ref.reject(record.canonical_hash, .invalid_url);
             }
-            try self.emit(.redirected, record, &result, 0, 0, 0, "");
+            try self.emit(.redirected, record, &result, 0, 0, 0, "", "", 0.0, 0);
             return true;
         }
         if (result.outcome == .not_modified) {
             try self.frontier_ref.complete(record.canonical_hash, .not_modified, result.status, 0, false);
             const interval = try self.scheduler_ref.applyAfterFetch(&record, false);
             _ = interval;
-            try self.emit(.recrawled, record, &result, 0, 0, 0, "");
+            try self.emit(.recrawled, record, &result, 0, 0, 0, "", "", 0.0, 0);
             return true;
         }
         if (result.outcome == .client_error) {
             self.pages_rejected += 1;
             try self.frontier_ref.reject(record.canonical_hash, .malformed_document);
-            try self.emit(.rejected, record, &result, 0, 0, 0, "");
+            try self.emit(.rejected, record, &result, 0, 0, 0, "", "", 0.0, 0);
             return false;
         }
         if (result.status != 200) {
             self.pages_rejected += 1;
             try self.frontier_ref.reschedule(record.canonical_hash, self.scheduler_ref.nextIntervalMs(&record, time.nowMs()));
-            try self.emit(.rejected, record, &result, 0, 0, 0, "");
+            try self.emit(.rejected, record, &result, 0, 0, 0, "", "", 0.0, 0);
             return false;
         }
         const is_html = std.mem.startsWith(u8, result.content_type, "text/html") or std.mem.indexOf(u8, result.content_type, "xml") != null;
@@ -263,7 +268,7 @@ pub const Coordinator = struct {
             const verdict = try self.deduplicator.classify(record.canonical_hash, record.domain_hash, extracted.text);
             if (verdict.class != .unique) {
                 self.pages_deduplicated += 1;
-                try self.emit(.deduplicated, record, &result, content_hash, extracted.text.len, extracted.links.len, extracted.title);
+                try self.emit(.deduplicated, record, &result, content_hash, extracted.text.len, extracted.links.len, extracted.title, extracted.text, @max(0.0, 1.0 - extracted.boilerplate_ratio), extracted.published_ms);
             }
         }
         const previous = self.velocity_tracker.profile(record.domain_hash);
@@ -280,7 +285,7 @@ pub const Coordinator = struct {
         const interval = try self.scheduler_ref.applyAfterFetch(&record, changed);
         _ = interval;
         self.pages_fetched += 1;
-        try self.emit(.fetched, record, &result, content_hash, extracted.text.len, extracted.links.len, extracted.title);
+        try self.emit(.fetched, record, &result, content_hash, extracted.text.len, extracted.links.len, extracted.title, extracted.text, @max(0.0, 1.0 - extracted.boilerplate_ratio), extracted.published_ms);
         try self.discoverLinks(&extracted, record, components);
         return true;
     }
@@ -338,6 +343,9 @@ pub const Coordinator = struct {
         text_length: usize,
         link_count: usize,
         title: []const u8,
+        text: []const u8,
+        quality: f32,
+        published_ms: i64,
     ) !void {
         if (!self.options.collect_events) return;
         const event = CrawlEvent{
@@ -348,6 +356,9 @@ pub const Coordinator = struct {
             .source_url = try self.allocator.dupe(u8, result.final_url),
             .content_hash = content_hash,
             .title = try self.allocator.dupe(u8, title),
+            .text = if (self.options.include_text and text.len > 0) try self.allocator.dupe(u8, text) else "",
+            .quality = quality,
+            .published_ms = published_ms,
             .status = result.status,
             .text_length = @intCast(@min(text_length, std.math.maxInt(u32))),
             .link_count = @intCast(@min(link_count, std.math.maxInt(u32))),

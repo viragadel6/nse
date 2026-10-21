@@ -224,7 +224,7 @@ pub const Options = struct {
     max_retries: u32 = 2,
     retry_base_ms: u64 = 200,
     retry_max_ms: u64 = 5000,
-    tls_enabled: bool = false,
+    tls_enabled: bool = true,
 };
 
 pub const FetchResult = struct {
