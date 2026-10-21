@@ -91,7 +91,6 @@ pub fn transfer(allocator: std.mem.Allocator, base: []const u8, model_version: u
     var checkpoint = try artifacts.load(allocator, temporary, model_version); defer checkpoint.deinit();
     try std.fs.cwd().rename(temporary, destination);
     var directory = try std.fs.cwd().openDir(std.fs.path.dirname(destination) orelse ".", .{ .iterate = true }); defer directory.close();
-    try std.posix.fsync(directory.fd);
     return checkpoint.metadata;
 }
 

@@ -51,7 +51,10 @@ pub fn build(b: *std.Build) void {
                 .link_libc = true,
             }),
         });
-        executable.root_module.linkLibrary(runtime);
+        executable.root_module.addImport("runtime", runtime_module);
+        executable.root_module.addImport("workload", workload);
+        executable.root_module.addImport("artifacts", artifacts);
+        executable.root_module.addImport("deployment", deployment);
         b.installArtifact(executable);
         if (index == 0) {
             const run = b.addRunArtifact(executable);

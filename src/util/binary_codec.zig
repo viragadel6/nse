@@ -385,3 +385,108 @@ pub fn writeFileAtomic(allocator: std.mem.Allocator, path: []const u8, data: []c
     defer dir.close();
     dir.sync() catch {};
 }
+
+pub const Encoder = struct {
+    allocator: std.mem.Allocator,
+    bytes: std.ArrayList(u8),
+
+    pub fn init(allocator: std.mem.Allocator) Encoder {
+        return .{ .allocator = allocator, .bytes = std.ArrayList(u8).init(allocator) };
+    }
+
+    pub fn deinit(self: *Encoder) void {
+        self.bytes.deinit();
+    }
+
+    pub fn integer(self: *Encoder, comptime T: type, value: T) !void {
+        switch (@typeInfo(T)) {
+            .int => |info| {
+                if (info.signedness == .signed) {
+                    try self.bytes.writer().writeInt(T, value, .little);
+                } else {
+                    try self.bytes.writer().writeInt(T, value, .little);
+                }
+            },
+            else => @compileError("integer encoding requires an integer type"),
+        }
+    }
+
+    pub fn float(self: *Encoder, value: f32) !void {
+        try self.bytes.writer().writeInt(u32, @bitCast(value), .little);
+    }
+
+    pub fn double(self: *Encoder, value: f64) !void {
+        try self.bytes.writer().writeInt(u64, @bitCast(value), .little);
+    }
+
+    pub fn boolean(self: *Encoder, value: bool) !void {
+        try self.bytes.append(if (value) 1 else 0);
+    }
+
+    pub fn string(self: *Encoder, value: []const u8) !void {
+        try self.bytes.writer().writeInt(u32, @intCast(value.len), .little);
+        try self.bytes.appendSlice(value);
+    }
+
+    pub fn raw(self: *Encoder, value: []const u8) !void {
+        try self.bytes.appendSlice(value);
+    }
+
+    pub fn owned(self: *Encoder) ![]u8 {
+        return self.bytes.toOwnedSlice();
+    }
+};
+
+pub const DecoderError = error{
+    UnexpectedEnd,
+    InvalidLength,
+    TrailingBytes,
+};
+
+pub const Decoder = struct {
+    bytes: []const u8,
+    position: usize = 0,
+
+    pub fn integer(self: *Decoder, comptime T: type) DecoderError!T {
+        const size = @divExact(@bitSizeOf(T), 8);
+        if (self.position + size > self.bytes.len) return DecoderError.UnexpectedEnd;
+        const value = std.mem.readInt(T, self.bytes[self.position..][0..size], .little);
+        self.position += size;
+        return value;
+    }
+
+    pub fn float(self: *Decoder) DecoderError!f32 {
+        return @bitCast(try self.integer(u32));
+    }
+
+    pub fn double(self: *Decoder) DecoderError!f64 {
+        return @bitCast(try self.integer(u64));
+    }
+
+    pub fn boolean(self: *Decoder) DecoderError!bool {
+        return try self.integer(u8) != 0;
+    }
+
+    pub fn string(self: *Decoder) DecoderError![]const u8 {
+        const length = try self.integer(u32);
+        if (self.position + length > self.bytes.len) return DecoderError.UnexpectedEnd;
+        const value = self.bytes[self.position..][0..length];
+        self.position += length;
+        return value;
+    }
+
+    pub fn raw(self: *Decoder, length: usize) DecoderError![]const u8 {
+        if (self.position + length > self.bytes.len) return DecoderError.UnexpectedEnd;
+        const value = self.bytes[self.position..][0..length];
+        self.position += length;
+        return value;
+    }
+
+    pub fn remaining(self: *const Decoder) usize {
+        return self.bytes.len - self.position;
+    }
+
+    pub fn finish(self: *const Decoder) DecoderError!void {
+        if (self.position != self.bytes.len) return DecoderError.TrailingBytes;
+    }
+};

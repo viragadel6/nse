@@ -63,7 +63,6 @@ fn process(allocator: std.mem.Allocator, config: deployment.Worker, mode: []cons
     const destination = try std.fs.path.join(allocator, &.{ directory, "completed", name }); defer allocator.free(destination);
     try std.fs.cwd().rename(path, destination);
     var parent = try std.fs.cwd().openDir(directory, .{ .iterate = true }); defer parent.close();
-    try std.posix.fsync(parent.fd);
 }
 
 pub fn run(allocator: std.mem.Allocator, mode: []const u8, directory: []const u8) !void {

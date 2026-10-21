@@ -271,6 +271,30 @@ pub const Log = struct {
         return count;
     }
 
+    pub fn reset(self: *Log) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        try self.flushLocked();
+        if (self.file) |file| {
+            file.close();
+            self.file = null;
+        }
+        var directory = try std.fs.cwd().openDir(self.options.dir, .{ .iterate = true });
+        defer directory.close();
+        var iterator = directory.iterate();
+        while (try iterator.next()) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.startsWith(u8, entry.name, "tx-")) continue;
+            directory.deleteFile(entry.name) catch {};
+        }
+        self.sequence.store(0, .release);
+        self.offset = 0;
+        self.appended = 0;
+        self.bytes_written = 0;
+        self.segments.clearRetainingCapacity();
+        try self.openSegment(std.fs.cwd().createFile(self.path, .{ .read = true, .truncate = true }));
+    }
+
     pub fn currentSequence(self: *Log) u64 {
         return self.sequence.load(.monotonic);
     }

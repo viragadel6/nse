@@ -1,7 +1,7 @@
 const std = @import("std");
 const tokenizer = @import("../models/tokenizer.zig");
 const Document = @import("../storage/document.zig").Document;
-const Store = @import("../storage/document_store.zig").Store;
+const Store = @import("../storage/document_collection.zig").Store;
 const bm25 = @import("bm25.zig");
 const Ranking = @import("../runtime/configuration.zig").RankingConfig;
 const Deadline = @import("../runtime/cancellation.zig").Deadline;
@@ -73,7 +73,7 @@ pub const Index = struct {
         var result = init(allocator);
         errdefer result.deinit();
         var iterator = store.entries.valueIterator();
-        while (iterator.next()) |entry| try result.add(entry.*);
+        while (iterator.next()) |entry| try result.add(entry);
         return result;
     }
 

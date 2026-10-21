@@ -126,3 +126,15 @@ pub const CrcStream = struct {
         return self.crc;
     }
 };
+
+pub fn content(data: []const u8) [32]u8 {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(data, &digest, .{});
+    return digest;
+}
+
+pub fn contentHex(data: []const u8) [64]u8 {
+    var output: [64]u8 = undefined;
+    _ = std.fmt.bufPrint(&output, "{s}", .{std.fmt.bytesToHex(content(data), .lower)}) catch return output;
+    return output;
+}

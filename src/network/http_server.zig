@@ -1,6 +1,7 @@
 const std = @import("std");
 const transport = @import("transport.zig");
 const time = @import("../util/time.zig");
+const signals = @import("../runtime/signals.zig");
 
 pub const ServerError = error{
     BindFailed,
@@ -455,4 +456,12 @@ pub fn statusReason(status: u16) []const u8 {
         503 => "Service Unavailable",
         else => "Status",
     };
+}
+
+pub fn serve(allocator: std.mem.Allocator, host: []const u8, listen_port: u16, handler: Handler, context: *anyopaque, options: Options) !void {
+    var server = try Server.init(allocator, host, listen_port, handler, context, options);
+    signals.install();
+    try server.start();
+    while (!signals.stopping()) std.Thread.sleep(25 * std.time.ns_per_ms);
+    server.stop();
 }
