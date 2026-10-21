@@ -1,0 +1,14 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "required": ["event_type", "timestamp_ms"],
+    "properties": {
+        "event_type": { "type": "string" },
+        "component": { "type": "string" },
+        "value": { "type": "number" },
+        "unit": { "type": "string" },
+        "timestamp_ms": { "type": "integer", "minimum": 0 },
+        "tags": { "type": "object" },
+        "anomaly": { "type": "boolean" }
+    }
+}

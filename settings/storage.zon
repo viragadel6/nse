@@ -1,0 +1,15 @@
+{
+    .document_path = "data/documents",
+    .metadata_path = "data/metadata",
+    .graph_path = "data/graph",
+    .checkpoint_path = "data/checkpoints",
+    .transaction_path = "data/transactions",
+    .segment_bytes = 256 * 1024 * 1024,
+    .mmap_limit_bytes = 8 * 1024 * 1024 * 1024,
+    .sync_interval_ms = 5000,
+    .compaction_interval_ms = 3600000,
+    .tombstone_ttl_ms = 604800000,
+    .replication_factor = 1,
+    .quorum_write = 1,
+    .quorum_read = 1,
+}

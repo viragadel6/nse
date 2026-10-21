@@ -1,0 +1,16 @@
+{
+    .stream_partitions = 16,
+    .segment_bytes = 64 * 1024 * 1024,
+    .wal_bytes = 256 * 1024 * 1024,
+    .max_event_bytes = 4 * 1024 * 1024,
+    .consumer_prefetch = 256,
+    .inflight_window = 1024,
+    .backpressure_hi = 0.8,
+    .backpressure_lo = 0.5,
+    .publish_interval_ms = 3600000,
+    .priority_publish_interval_ms = 300000,
+    .compaction_threshold_dead = 0.3,
+    .snapshot_interval_ms = 86400000,
+    .dedup_window_events = 1000000,
+    .dedup_bloom_bits = 64 * 1024 * 1024,
+}

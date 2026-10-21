@@ -1,0 +1,17 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "required": ["format_version", "generation", "model_version", "dimensions", "retained_dimensions", "centroid_count", "document_count", "shard_count", "checksum"],
+    "properties": {
+        "format_version": { "type": "integer", "minimum": 1 },
+        "generation": { "type": "integer", "minimum": 0 },
+        "model_version": { "type": "integer", "minimum": 0 },
+        "dimensions": { "type": "integer", "minimum": 1 },
+        "retained_dimensions": { "type": "integer", "minimum": 1 },
+        "centroid_count": { "type": "integer", "minimum": 1 },
+        "document_count": { "type": "integer", "minimum": 0 },
+        "shard_count": { "type": "integer", "minimum": 1 },
+        "checksum": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "created_at_ms": { "type": "integer", "minimum": 0 }
+    }
+}
