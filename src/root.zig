@@ -1,0 +1,132 @@
+const std = @import("std");
+const configuration = @import("runtime/configuration.zig");
+const Engine = @import("runtime/lifecycle.zig").Engine;
+const server = @import("network/http_server.zig");
+const documents = @import("storage/document.zig");
+const codec = @import("api/request_codec.zig");
+const inference = @import("models/inference_client.zig");
+const fetcher = @import("crawl/fetcher.zig");
+const protocol = @import("workload");
+const artifacts = @import("artifacts");
+const modal = @import("orchestration/modal_client.zig");
+const cluster = @import("runtime/cluster_launcher.zig");
+const worker = @import("runtime/deployment_worker.zig");
+
+fn output(value: anytype) !void {
+    try std.json.stringify(value, .{}, std.io.getStdOut().writer());
+    try std.io.getStdOut().writer().writeByte('\n');
+}
+
+fn commandKnown(value: []const u8) bool {
+    inline for (.{ "serve", "ingest", "search", "status", "refresh", "snapshot", "embed", "delete", "crawl", "embed-batch", "train", "train-status", "train-cancel", "checkpoint", "model-register", "cluster", "cluster-validate", "worker" }) |command| if (std.mem.eql(u8, value, command)) return true;
+    return false;
+}
+
+pub fn run(default_command: []const u8) !void {
+    var general = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
+    defer _ = general.deinit();
+    const allocator = general.allocator();
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const temporary = arena.allocator();
+    const args = try std.process.argsAlloc(temporary);
+    const explicit_command = args.len > 1 and commandKnown(args[1]);
+    const command = if (explicit_command) args[1] else default_command;
+    const start: usize = if (explicit_command) 2 else 1;
+    if (std.mem.eql(u8, command, "cluster") or std.mem.eql(u8, command, "cluster-validate")) return cluster.run(temporary, if (args.len > start) args[start] else "deploy", std.mem.eql(u8, command, "cluster"));
+    if (std.mem.eql(u8, command, "worker")) {
+        if (args.len <= start + 1) return error.MissingWorkerArguments;
+        return worker.run(allocator, args[start], args[start + 1]);
+    }
+    const config_path = if (args.len > start) args[start] else "settings";
+    const config = try configuration.load(temporary, config_path);
+    if (std.mem.eql(u8, command, "train")) {
+        if (args.len <= start + 1) return error.MissingTrainingRequest;
+        const bytes = try std.fs.cwd().readFileAlloc(temporary, args[start + 1], 64 * 1024 * 1024);
+        var request = try protocol.parse(protocol.TrainingRequest, temporary, bytes);
+        const supplied = try protocol.parse(std.json.Value, temporary, bytes);
+        try config.training.defaults(&request.value, supplied.value);
+        const submission = try modal.submit(temporary, config.model.workload_endpoint, request.value, config.runtime.connection_timeout_ms);
+        const record = try std.json.stringifyAlloc(temporary, .{ .request = request.value, .submission = submission.value }, .{});
+        const path = try std.fmt.allocPrint(temporary, "{s}/gpu_jobs/{s}.json", .{ config.runtime.data_path, request.value.job_id });
+        try artifacts.atomicWrite(temporary, path, record);
+        return output(submission.value);
+    }
+    if (std.mem.eql(u8, command, "train-status") or std.mem.eql(u8, command, "train-cancel")) {
+        if (args.len <= start + 1) return error.MissingTrainingCall;
+        const result = if (std.mem.eql(u8, command, "train-status")) try modal.status(temporary, config.model.workload_endpoint, args[start + 1], config.runtime.connection_timeout_ms) else try modal.cancel(temporary, config.model.workload_endpoint, args[start + 1], config.runtime.connection_timeout_ms);
+        return output(result.value);
+    }
+    if (std.mem.eql(u8, command, "checkpoint")) {
+        if (args.len <= start + 2) return error.MissingCheckpointArguments;
+        const version = try std.fmt.parseInt(u64, args[start + 1], 10);
+        return output(try modal.transfer(temporary, config.model.workload_endpoint, version, args[start + 2], config.runtime.connection_timeout_ms));
+    }
+    if (std.mem.eql(u8, command, "model-register")) {
+        if (args.len <= start + 1) return error.MissingModelVersion;
+        const version = try std.fmt.parseInt(u64, args[start + 1], 10);
+        const result = try modal.register(temporary, config.model.workload_endpoint, .{ .model_version = version, .expected_current_version = if (args.len > start + 2) try std.fmt.parseInt(u64, args[start + 2], 10) else null }, config.runtime.connection_timeout_ms);
+        return output(result.value);
+    }
+    if (std.mem.eql(u8, command, "embed-batch")) {
+        if (args.len <= start + 1) return error.MissingEmbeddingInput;
+        const bytes = try std.fs.cwd().readFileAlloc(temporary, args[start + 1], config.api.body_bytes);
+        const items = try protocol.parse([]const protocol.Item, temporary, bytes);
+        const result = try inference.batch(temporary, config.model, items.value, config.runtime.connection_timeout_ms);
+        return output(result.value);
+    }
+    if (std.mem.eql(u8, command, "embed")) {
+        if (args.len <= start + 1) return error.MissingInputPath;
+        const text = try std.fs.cwd().readFileAlloc(temporary, args[start + 1], config.api.body_bytes);
+        const embedding = try inference.embed(temporary, config.model, text, .document, config.runtime.connection_timeout_ms);
+        try output(.{ .embedding = embedding, .model_version = config.model.model_version, .dimensions = config.model.dimensions });
+        return;
+    }
+    var engine = try Engine.open(allocator, config);
+    defer engine.close();
+    if (std.mem.eql(u8, command, "serve")) return server.serve(&engine);
+    if (std.mem.eql(u8, command, "status")) return output(engine.status());
+    if (std.mem.eql(u8, command, "refresh")) return output(try engine.refresh(false));
+    if (std.mem.eql(u8, command, "snapshot")) return output(try engine.refresh(true));
+    if (std.mem.eql(u8, command, "delete")) {
+        if (args.len <= start + 1) return error.MissingDocumentIdentifier;
+        const id = try std.fmt.parseInt(u64, args[start + 1], 10);
+        return output(.{ .deleted = try engine.delete(id), .index = engine.status() });
+    }
+    if (args.len <= start + 1) return error.MissingInputPath;
+    if (std.mem.eql(u8, command, "crawl")) return output(try fetcher.fetch(&engine, temporary, args[start + 1]));
+    if (std.mem.eql(u8, command, "search")) {
+        const bytes = try std.fs.cwd().readFileAlloc(temporary, args[start + 1], config.api.body_bytes);
+        const parsed = try codec.parse(codec.Search, temporary, bytes);
+        defer parsed.deinit();
+        return output(try engine.search(temporary, parsed.value));
+    }
+    if (std.mem.eql(u8, command, "ingest")) {
+        const file = try std.fs.cwd().openFile(args[start + 1], .{});
+        defer file.close();
+        var buffered = std.io.bufferedReader(file.reader());
+        const reader = buffered.reader();
+        while (true) {
+            var record_arena = std.heap.ArenaAllocator.init(allocator);
+            defer record_arena.deinit();
+            const record_allocator = record_arena.allocator();
+            const line = try reader.readUntilDelimiterOrEofAlloc(record_allocator, '\n', config.api.body_bytes) orelse break;
+            const trimmed = std.mem.trim(u8, line, " \r\t");
+            if (trimmed.len == 0) continue;
+            const parsed = try codec.parse(documents.Input, record_allocator, trimmed);
+            defer parsed.deinit();
+            try output(try engine.ingest(record_allocator, parsed.value));
+        }
+        return;
+    }
+    return error.UnknownCommand;
+}
+
+export fn execute(command: [*:0]const u8) u8 {
+    run(std.mem.span(command)) catch |err| {
+        std.json.stringify(.{ .@"error" = .{ .code = @errorName(err) } }, .{}, std.io.getStdErr().writer()) catch return 1;
+        std.io.getStdErr().writer().writeByte('\n') catch return 1;
+        return 1;
+    };
+    return 0;
+}

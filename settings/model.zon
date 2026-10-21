@@ -1,0 +1,7 @@
+.{
+    .embedding_endpoint = "",
+    .health_endpoint = "",
+    .dimensions = 4096,
+    .model_version = 1,
+    .response_bytes = 1048576,
+}

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Versioned dual encoder training workload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["job_id", "model_version"],
+  "properties": {
+    "protocol_version": {"const": 1, "default": 1},
+    "job_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$"},
+    "model_version": {"type": "integer", "minimum": 1},
+    "resume": {"type": "boolean", "default": true},
+    "dataset_path": {"type": ["string", "null"]},
+    "pairs": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["query", "document"], "properties": {
+      "query": {"type": "string", "minLength": 1}, "document": {"type": "string", "minLength": 1},
+      "query_structure": {"type": "array", "items": {"$ref": "gpu_workload.schema.json#/$defs/span"}},
+      "document_structure": {"type": "array", "items": {"$ref": "gpu_workload.schema.json#/$defs/span"}}
+    }}},
+    "steps": {"type": "integer", "minimum": 1, "maximum": 4294967295, "default": 1000},
+    "batch_size": {"type": "integer", "minimum": 2, "maximum": 65535, "default": 8},
+    "hidden": {"type": "integer", "minimum": 16, "maximum": 1024, "default": 64},
+    "layers": {"type": "integer", "minimum": 1, "maximum": 24, "default": 2},
+    "max_tokens": {"type": "integer", "minimum": 1, "maximum": 4096, "default": 256},
+    "learning_rate": {"type": "number", "exclusiveMinimum": 0, "default": 0.0003},
+    "weight_decay": {"type": "number", "minimum": 0, "default": 0.01},
+    "gradient_clip": {"type": "number", "exclusiveMinimum": 0, "default": 1},
+    "warmup_steps": {"type": "integer", "minimum": 0, "default": 100},
+    "checkpoint_interval": {"type": "integer", "minimum": 1, "default": 100},
+    "seed": {"type": "integer", "minimum": 0, "default": 1},
+    "deadline_ms": {"type": "integer", "minimum": 1, "maximum": 4294967295, "default": 86400000}
+  },
+  "anyOf": [{"required": ["dataset_path"], "properties": {"dataset_path": {"type": "string", "minLength": 1}}}, {"required": ["pairs"], "properties": {"pairs": {"minItems": 2}}}]
+}

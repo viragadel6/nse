@@ -1,0 +1,7 @@
+.{
+    .address = "0.0.0.0",
+    .port = 8080,
+    .header_bytes = 16384,
+    .body_bytes = 8388608,
+    .default_deadline_ms = 100,
+}

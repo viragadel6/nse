@@ -1,0 +1,15 @@
+[Unit]
+Description=Persistent document crawler worker
+After=network-online.target search.service
+Wants=network-online.target search.service
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/neural_search_engine
+EnvironmentFile=-/home/ubuntu/neural_search_engine/deploy/runtime.env
+ExecStart=/home/ubuntu/neural_search_engine/zig-out/bin/deployment-worker worker crawl deploy
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=660
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+[Unit]
+Description=Distributed search cluster process coordinator
+After=network-online.target
+Wants=network-online.target
+Conflicts=search.service crawler.service ingestion.service indexer.service
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/neural_search_engine
+EnvironmentFile=-/home/ubuntu/neural_search_engine/deploy/runtime.env
+ExecStart=/home/ubuntu/neural_search_engine/zig-out/bin/cluster-launcher cluster deploy
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=45
+[Install]
+WantedBy=multi-user.target

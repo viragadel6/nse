@@ -1,0 +1,8 @@
+.{
+    .node_id = 1,
+    .address = "127.0.0.1",
+    .port = 8080,
+    .root_path = "/home/ubuntu/neural_search_engine",
+    .executable_path = "/home/ubuntu/neural_search_engine/zig-out/bin",
+    .settings_path = "settings",
+}

@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Dual structural transformer checkpoint metadata",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format_version",
+    "model_version",
+    "dimensions",
+    "retained_dimensions",
+    "hidden",
+    "layers",
+    "max_tokens",
+    "step",
+    "seed",
+    "tokenizer",
+    "architecture",
+    "precision",
+    "parameter_count"
+  ],
+  "properties": {
+    "format_version": {
+      "const": 1
+    },
+    "model_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "dimensions": {
+      "const": 4096
+    },
+    "retained_dimensions": {
+      "const": 256
+    },
+    "hidden": {
+      "type": "integer",
+      "minimum": 16,
+      "maximum": 1024
+    },
+    "layers": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 24
+    },
+    "max_tokens": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4096
+    },
+    "step": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "tokenizer": {
+      "const": "utf8_bytes_v1"
+    },
+    "architecture": {
+      "const": "dual_structural_transformer_v1"
+    },
+    "precision": {
+      "const": "float32"
+    },
+    "parameter_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "last_loss": {
+      "type": [
+        "number",
+        "null"
+      ]
+    }
+  }
+}

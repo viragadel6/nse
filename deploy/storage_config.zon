@@ -1,0 +1,7 @@
+.{
+    .data_path = "/home/ubuntu/neural_search_engine/data",
+    .spool_path = "/home/ubuntu/neural_search_engine/data/spool",
+    .checkpoint_path = "/home/ubuntu/neural_search_engine/data/checkpoints",
+    .frontier_path = "/home/ubuntu/neural_search_engine/data/frontier",
+    .minimum_available_bytes = 67108864,
+}

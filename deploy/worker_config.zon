@@ -1,0 +1,10 @@
+.{
+    .api_endpoint = "http://127.0.0.1:8080",
+    .spool_path = "/home/ubuntu/neural_search_engine/data/spool",
+    .frontier_path = "/home/ubuntu/neural_search_engine/data/frontier",
+    .poll_ms = 1000,
+    .refresh_ms = 3600000,
+    .response_bytes = 8388608,
+    .timeout_ms = 600000,
+    .discover_links = true,
+}

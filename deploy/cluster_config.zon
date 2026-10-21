@@ -1,0 +1,13 @@
+.{
+    .protocol_version = 1,
+    .nodes = .{ .{
+        .node_id = 1,
+        .endpoint = "http://127.0.0.1:8080",
+        .local = true,
+        .settings_path = "settings",
+        .data_path = "data",
+    } },
+    .readiness_timeout_ms = 30000,
+    .shutdown_timeout_ms = 30000,
+    .readiness_poll_ms = 200,
+}

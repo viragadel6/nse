@@ -1,0 +1,19 @@
+{
+  "protocol_version": 1,
+  "app_name": "distributed-neural-workloads",
+  "gpu": "B300",
+  "gpu_count": 1,
+  "cuda_image": "nvidia/cuda:13.1.1-devel-ubuntu24.04",
+  "zig_version": "0.14.1",
+  "artifact_volume": "neural-model-artifacts",
+  "artifact_mount": "/artifacts",
+  "worker": "/opt/runtime/zig-out/bin/gpu-worker",
+  "cpu": 4.0,
+  "memory_mb": 16384,
+  "embedding_timeout_seconds": 600,
+  "training_timeout_seconds": 86400,
+  "scaledown_window_seconds": 300,
+  "model_version": 1,
+  "request_bytes": 67108864,
+  "dependencies": {"modal": "1.6.2", "fastapi": "0.156.7", "ziglang": "0.14.1"}
+}

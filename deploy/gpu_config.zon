@@ -1,0 +1,14 @@
+.{
+    .protocol_version = 1,
+    .platform = .modal,
+    .production_gpu = .B300,
+    .production_gpu_count = 1,
+    .cuda_major = 13,
+    .cuda_minor = 1,
+    .dimensions = 4096,
+    .retained_dimensions = 256,
+    .request_bytes = 67108864,
+    .timeout_ms = 600000,
+    .gateway_environment = "MODAL_GATEWAY_URL",
+    .alternate_profile = .{ .gpu = .H200, .gpu_count = 144 },
+}

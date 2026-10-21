@@ -1,0 +1,6 @@
+.{
+    .data_path = "data",
+    .worker_threads = 8,
+    .queue_capacity = 128,
+    .connection_timeout_ms = 10000,
+}

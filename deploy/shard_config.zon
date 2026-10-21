@@ -1,0 +1,7 @@
+.{
+    .format_version = 1,
+    .shard_count = 256,
+    .replication_factor = 1,
+    .placement = .rendezvous,
+    .hash_seed = 0,
+}

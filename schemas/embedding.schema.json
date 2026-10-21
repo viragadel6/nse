@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EmbeddingProtocol",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "kind", "model_version", "dimensions"],
+      "properties": {
+        "text": {"type": "string"},
+        "kind": {"enum": ["query", "document"]},
+        "model_version": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615},
+        "dimensions": {"const": 4096}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["embedding", "model_version", "dimensions"],
+      "properties": {
+        "embedding": {"type": "array", "minItems": 4096, "maxItems": 4096, "items": {"type": "number"}},
+        "model_version": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615},
+        "dimensions": {"const": 4096}
+      }
+    }
+  ]
+}
