@@ -15,6 +15,7 @@
     .fusion_sparse_weight = 1.0,
     .fusion_dense_weight = 1.15,
     .fusion_vertical_weight = 1.05,
+    .fusion_freshness_weight = 0.05,
     .lexical_normalization = "minmax",
     .semantic_normalization = "zscore",
     .rerank_enabled = true,

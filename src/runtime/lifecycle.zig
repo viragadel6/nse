@@ -6,7 +6,8 @@ const Mutation = @import("../storage/document_collection.zig").Mutation;
 const documents = @import("../storage/document.zig");
 const sparse = @import("../retrieval/sparse_index.zig");
 const vector = @import("../index/vector_index.zig");
-const fusion = @import("../retrieval/reciprocal_rank_fusion.zig");
+const hybrid = @import("../retrieval/hybrid_retriever.zig");
+const filters = @import("../retrieval/filter_engine.zig");
 const request = @import("../api/request_codec.zig");
 const inference = @import("../models/inference_client.zig");
 const highlights = @import("../highlights/highlight_extractor.zig");
@@ -73,6 +74,9 @@ pub const Engine = struct {
     wal_dir: []const u8,
     sparse_index: sparse.Index,
     vector_index: vector.Index,
+    retriever: hybrid.Retriever,
+    filter_engine: filters.Engine,
+    published_index: std.AutoHashMapUnmanaged(u64, i64) = .{},
     lock: std.Thread.RwLock = .{},
     cancellation: cancellation.Token = .{},
     metrics: Metrics = .{},
@@ -99,12 +103,30 @@ pub const Engine = struct {
             .wal_dir = wal_dir,
             .sparse_index = undefined,
             .vector_index = undefined,
+            .retriever = try hybrid.Retriever.init(allocator, .{
+                .lexical = config.ranking.fusion_sparse_weight,
+                .dense = config.ranking.fusion_dense_weight,
+                .quality = config.ranking.source_quality_weight,
+                .freshness = config.ranking.fusion_freshness_weight,
+                .rrf_constant = config.ranking.fusion_rank_constant,
+            }),
+            .filter_engine = filters.Engine.init(allocator),
         };
         try result.replayWal();
         result.sparse_index = try sparse.Index.build(allocator, &result.store);
         result.vector_index = try vector.Index.build(allocator, &result.store, config.model.model_version);
+        try result.rebuildPublished();
         result.metrics.recovered.store(store.recovered_records, .monotonic);
         return result;
+    }
+
+    fn rebuildPublished(self: *Engine) !void {
+        var next = std.AutoHashMapUnmanaged(u64, i64){};
+        errdefer next.deinit(self.allocator);
+        var iterator = self.store.entries.valueIterator();
+        while (iterator.next()) |document| try next.put(self.allocator, document.id, document.published_at);
+        self.published_index.deinit(self.allocator);
+        self.published_index = next;
     }
 
     fn replayWal(self: *Engine) !void {
@@ -171,6 +193,7 @@ pub const Engine = struct {
         self.wal.flush() catch {};
         self.vector_index.deinit();
         self.sparse_index.deinit();
+        self.published_index.deinit(self.allocator);
         self.wal.deinit();
         self.store.close();
         self.allocator.free(self.wal_dir);
@@ -184,6 +207,7 @@ pub const Engine = struct {
         self.vector_index.deinit();
         self.sparse_index = next_sparse;
         self.vector_index = next_vector;
+        try self.rebuildPublished();
         self.ready = true;
     }
 
@@ -257,20 +281,45 @@ pub const Engine = struct {
         return self.statusLocked();
     }
 
-    fn matches(allocator: std.mem.Allocator, document: *const documents.Document, filters: request.Filters) bool {
-        if (document.quality < filters.minimum_quality) return false;
-        if (filters.language) |language| if (!std.ascii.eqlIgnoreCase(document.language, language)) return false;
-        if (filters.published_after) |after| if (document.published_at < after) return false;
-        if (filters.published_before) |before| if (document.published_at > before) return false;
-        if (filters.domains.len > 0) {
-            const parsed = urls.parse(document.url) catch return false;
-            const domain = urls.registrableDomain(allocator, parsed.host) catch return false;
-            defer allocator.free(domain);
-            var found = false;
-            for (filters.domains) |wanted| if (std.ascii.eqlIgnoreCase(domain, wanted)) { found = true; break; };
-            if (!found) return false;
+    fn buildFilter(allocator: std.mem.Allocator, input: request.Filters) !filters.Filter {
+        var builder = filters.Builder.init(allocator);
+        errdefer builder.deinit();
+        try builder.addNumeric("quality", .gte, @as(f64, input.minimum_quality), 0.0);
+        if (input.language) |language| try builder.addTermSet("language", &[_][]const u8{language}, &[_][]const u8{});
+        if (input.published_after) |after| try builder.addInteger("published", .gte, after, 0);
+        if (input.published_before) |before| try builder.addInteger("published", .lte, before, 0);
+        if (input.domains.len > 0) try builder.addTermSet("domain", input.domains, &[_][]const u8{});
+        const filter = try builder.build(.and_);
+        builder.deinit();
+        return filter;
+    }
+
+    fn attributes(allocator: std.mem.Allocator, document: *const documents.Document, with_domain: bool) filters.DocumentAttributes {
+        var domain: []const u8 = "";
+        if (with_domain) {
+            if (urls.parse(document.url)) |parsed| {
+                if (urls.registrableDomain(allocator, parsed.host)) |resolved| domain = resolved else |_| {}
+            } else |_| {}
         }
-        return true;
+        return .{
+            .document_id = document.id,
+            .language = document.language,
+            .domain = domain,
+            .url = document.url,
+            .site = "",
+            .kind = "",
+            .quality = @as(f64, document.quality),
+            .spam_score = 0.0,
+            .authority = @as(f64, document.quality),
+            .published_ms = document.published_at,
+            .fetched_ms = 0,
+            .indexed_ms = document.indexed_at,
+            .length = @as(u32, @intCast(document.text.len)),
+            .link_count = 0,
+            .inbound_links = 0,
+            .embedding_version = @as(u32, @intCast(document.model_version)),
+            .flags = 0,
+        };
     }
 
     pub fn search(self: *Engine, allocator: std.mem.Allocator, input: request.Search) !SearchResponse {
@@ -312,15 +361,39 @@ pub const Engine = struct {
         defer allocator.free(sparse_candidates);
         const dense_candidates = if (embedding) |coordinates| try self.vector_index.search(allocator, &self.store, coordinates, self.config.ranking.default_candidate_count, deadline) else try allocator.alloc(sparse.Candidate, 0);
         defer allocator.free(dense_candidates);
-        const fused = try fusion.fuse(allocator, sparse_candidates, dense_candidates, self.config.ranking);
-        defer allocator.free(fused);
+        const lexical_hits = try allocator.alloc(hybrid.LexicalHit, sparse_candidates.len);
+        defer allocator.free(lexical_hits);
+        for (sparse_candidates, 0..) |candidate, index| lexical_hits[index] = .{ .document_id = candidate.id, .score = candidate.score, .matched_terms = 0 };
+        const dense_hits = try allocator.alloc(hybrid.DenseHit, dense_candidates.len);
+        defer allocator.free(dense_hits);
+        for (dense_candidates, 0..) |candidate, index| {
+            dense_hits[index] = .{
+                .document_id = candidate.id,
+                .score = candidate.score,
+                .quality = if (self.store.entries.getPtr(candidate.id)) |stored| stored.quality else 1.0,
+            };
+        }
+        var retriever = self.retriever;
+        retriever.final_limit = input.result_count;
+        retriever.mode = switch (input.mode) {
+            .sparse => .lexical_only,
+            .dense => .dense_only,
+            .hybrid => .hybrid,
+        };
+        var filter_engine = self.filter_engine;
+        var filter = try buildFilter(allocator, input.filters);
+        defer filter.release();
+        const outcome = try retriever.combine(lexical_hits, dense_hits, std.time.milliTimestamp(), &self.published_index);
+        defer allocator.free(outcome.results);
         var output = std.ArrayList(Result).init(allocator);
         errdefer output.deinit();
-        for (fused) |candidate| {
+        for (outcome.results) |candidate| {
             if (output.items.len == input.result_count) break;
             try deadline.check();
-            const document = self.store.entries.getPtr(candidate.id) orelse return error.IndexDocumentMissing;
-            if (!matches(allocator, document, input.filters)) continue;
+            const document = self.store.entries.getPtr(candidate.document_id) orelse return error.IndexDocumentMissing;
+            const document_attributes = attributes(allocator, document, input.filters.domains.len > 0);
+            defer if (document_attributes.domain.len > 0) allocator.free(document_attributes.domain);
+            if (!try filter_engine.evaluate(&filter, document_attributes)) continue;
             var selected_highlight: ?highlights.Highlight = null;
             if (input.highlights) {
                 var selected = try highlights.extract(allocator, input.query, document.text, 320);
@@ -338,7 +411,7 @@ pub const Engine = struct {
                 .quality = document.quality,
                 .score = candidate.score,
                 .lexical_score = candidate.lexical_score,
-                .semantic_score = candidate.semantic_score,
+                .semantic_score = candidate.dense_score,
                 .highlight = selected_highlight,
             });
         }

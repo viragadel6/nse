@@ -108,7 +108,7 @@ pub fn run(default_command: []const u8) !void {
         return output(.{ .deleted = try engine.delete(id), .index = engine.status() });
     }
     if (positional.items.len < 1) return error.MissingInputPath;
-    if (std.mem.eql(u8, command, "crawl")) return output(try routes.crawl(temporary, &engine, try (first orelse error.MissingInputPath)));
+    if (std.mem.eql(u8, command, "crawl")) return output(try routes.crawl(temporary, &engine, try (first orelse error.MissingInputPath), 0));
     if (std.mem.eql(u8, command, "search")) {
         const bytes = try std.fs.cwd().readFileAlloc(temporary, try (first orelse error.MissingInputPath), config.api.max_request_bytes);
         const parsed = try codec.parse(codec.Search, temporary, bytes);

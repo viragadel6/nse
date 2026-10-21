@@ -50,6 +50,7 @@ pub const Store = struct {
     pub fn open(allocator: std.mem.Allocator, dir: []const u8, max_record_bytes: u32) !Store {
         std.fs.cwd().makePath(dir) catch {};
         const path = try std.fmt.allocPrint(allocator, "{s}/documents.snapshot", .{dir});
+        errdefer allocator.free(path);
         var result = Store{
             .allocator = allocator,
             .path = path,

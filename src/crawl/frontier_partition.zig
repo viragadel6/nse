@@ -243,6 +243,14 @@ pub const Partition = struct {
         return PartitionError.PartitionFull;
     }
 
+    pub fn readSlotRange(self: *Partition, buffer: []u8, start: u64, count: u64) !usize {
+        if (start >= self.options.slot_count or count == 0) return 0;
+        const available = @min(count, self.options.slot_count - start);
+        if (buffer.len < available * slot_bytes) return PartitionError.CorruptPartition;
+        const bytes = try self.slot_file.preadAll(buffer[0 .. available * slot_bytes], slotOffset(start));
+        return bytes / slot_bytes;
+    }
+
     pub fn scan(self: *Partition, allocator: std.mem.Allocator, visitor: *const fn (context: *anyopaque, record: state.UrlRecord) anyerror!void, context: *anyopaque) !usize {
         var index: u64 = 0;
         var visited: usize = 0;

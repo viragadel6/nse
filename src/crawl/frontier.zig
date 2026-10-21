@@ -14,6 +14,8 @@ pub const FrontierError = error{
     CheckpointFailed,
 };
 
+pub const slot_chunk: u64 = 256;
+
 pub const Options = struct {
     dir: []const u8 = "data/frontier",
     partition_count: u32 = 64,
@@ -145,38 +147,47 @@ pub const Frontier = struct {
         const expiry = now_ms + @as(i64, @intCast(self.options.lease_duration_ms));
         const partition_count = self.partitions.len;
         var inspected: usize = 0;
+        var buffer: [slot_chunk * partitions.slot_bytes]u8 = undefined;
         while (candidates.items.len < count and inspected < partition_count * 4) : (inspected += 1) {
             const index = @mod(@as(u64, @intCast(inspected)), @as(u64, @intCast(partition_count)));
             const partition = &self.partitions[index];
+            if (partition.live_count == 0) continue;
             const cursor = self.cursors[index];
-            const window = self.options.scan_window;
-            var offset: u32 = 0;
-            while (offset < window) : (offset += 1) {
-                const slot_index = (cursor + offset) % partition.options.slot_count;
-                const slot = try self.readSlot(partition, slot_index);
-                if (slot.hash == 0) continue;
-                if (slot.state != @intFromEnum(state.FetchState.scheduled)) continue;
-                const record = (try partition.lookup(slot.hash)) orelse continue;
-                if (record.next_fetch_ms > now_ms) {
-                    record.release(self.allocator);
-                    continue;
+            const window = self.scanWindowFor(partition);
+            var scanned: u64 = 0;
+            while (scanned < window and candidates.items.len < count) {
+                const slot_index = (cursor + scanned) % partition.options.slot_count;
+                const slots = try partition.readSlotRange(&buffer, slot_index, slot_chunk);
+                if (slots == 0) break;
+                for (0..slots) |offset| {
+                    if (candidates.items.len >= count) break;
+                    const slot = partitions.Slot.decode(buffer[offset * partitions.slot_bytes ..][0..partitions.slot_bytes]) catch continue;
+                    if (slot.hash == 0) continue;
+                    if (slot.state != @intFromEnum(state.FetchState.scheduled)) continue;
+                    const record = (try partition.lookup(slot.hash)) orelse continue;
+                    if (record.next_fetch_ms > now_ms) {
+                        record.release(self.allocator);
+                        continue;
+                    }
+                    var leased_record = record;
+                    leased_record.state = .leased;
+                    leased_record.lease_owner = worker_id;
+                    leased_record.lease_expiry_ms = expiry;
+                    try partition.upsert(&leased_record);
+                    try self.recordTransition(leased_record.canonical_hash, state.FetchState.scheduled, state.FetchState.leased, worker_id);
+                    try candidates.append(leased_record);
+                    self.leased += 1;
                 }
-                var leased_record = record;
-                leased_record.state = .leased;
-                leased_record.lease_owner = worker_id;
-                leased_record.lease_expiry_ms = expiry;
-                try partition.upsert(&leased_record);
-                try self.recordTransition(leased_record.canonical_hash, state.FetchState.scheduled, state.FetchState.leased, worker_id);
-                try candidates.append(leased_record);
-                self.cursors[index] = (slot_index + 1) % partition.options.slot_count;
-                self.leased += 1;
-                break;
+                scanned += slots;
             }
-            if (self.cursors[index] == cursor) {
-                self.cursors[index] = (cursor + window) % partition.options.slot_count;
-            }
+            self.cursors[index] = (cursor + scanned) % partition.options.slot_count;
         }
         return candidates.toOwnedSlice();
+    }
+
+    fn scanWindowFor(self: *const Frontier, partition: *const partitions.Partition) u64 {
+        if (partition.live_count * 8 < partition.options.slot_count) return partition.options.slot_count;
+        return @min(self.options.scan_window, partition.options.slot_count);
     }
 
     fn readSlot(_: *Frontier, partition: *partitions.Partition, slot_index: u64) !partitions.Slot {
